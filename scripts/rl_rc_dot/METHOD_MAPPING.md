@@ -1,7 +1,7 @@
 # RL-RC-DoT to VVenC: technical specification, adapter/3
 
 Current method definitions are below; older results are explicitly historical.
-Operational instructions: [project README](../../README_RL_RC_DOT.md).
+Operational instructions: [project README](../../README.md).
 
 ## QG correctness repair 2026 11 15
 
