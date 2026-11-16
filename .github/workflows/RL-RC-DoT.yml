@@ -1,0 +1,89 @@
+name: RL-RC-DoT checks
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  python-contracts:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Dependencies without CUDA replacement
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg libswscale-dev libavutil-dev
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r scripts/rl_rc_dot/requirements.txt
+      - name: Contracts, PPO, resume, validation, metrics and color protocol
+        env:
+          OMP_NUM_THREADS: '2'
+        run: |
+          python -m unittest discover -s scripts/rl_rc_dot -p 'test_*.py' -v
+          python -c "from scripts.rl_rc_dot.pixels import verify_conversion; print(verify_conversion())"
+
+  native:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Native dependencies
+        run: |
+          python -m pip install numpy
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake build-essential ffmpeg
+      - name: Build VVenC
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVVENC_ENABLE_THIRDPARTY_JSON=ON -DVVENC_ENABLE_INSTALL=OFF
+          cmake --build build --target vvencapp --parallel 2
+      - name: Pin and build VVdeC
+        run: |
+          git clone --no-checkout https://github.com/fraunhoferhhi/vvdec.git tools/vvdec
+          git -C tools/vvdec fetch --no-tags origin 649f0b2fafee977c998d7e4d674f8b88d952e3a3
+          git -C tools/vvdec checkout --detach 649f0b2fafee977c998d7e4d674f8b88d952e3a3
+          cmake -S tools/vvdec -B tools/vvdec/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build tools/vvdec/build --target vvdecapp --parallel 2
+      - name: Real state/action/AU/CU/decoder and isolated POC gates
+        run: |
+          python -m scripts.rl_rc_dot.preflight --encoder bin/release-static/vvencapp --decoder tools/vvdec/bin/release-static/vvdecapp --output checks/native --frames 32
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-binaries
+          path: |
+            bin/release-static/vvencapp
+            tools/vvdec/bin/release-static/vvdecapp
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: codec-evidence
+          path: checks/native
+
+  native-ppo:
+    needs: native
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-binaries
+      - name: Python dependencies
+        run: |
+          chmod +x bin/release-static/vvencapp
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r scripts/rl_rc_dot/requirements.txt
+      - name: Real codec to PPO update to fresh checkpoint rollout
+        env:
+          RCDOT_TEST_ENCODER: ${{ github.workspace }}/bin/release-static/vvencapp
+          OMP_NUM_THREADS: '2'
+        run: python -m unittest scripts.rl_rc_dot.test_native_integrated -v
