@@ -15,7 +15,8 @@ from stable_baselines3.common.buffers import DictRolloutBuffer
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.utils import explained_variance
 from stable_baselines3.common.vec_env import VecEnvWrapper
-from .method import action_map,wire_map
+from .method import wire_map
+from .qp_development import map_action, DEV_OBSERVATIONS, DEV_ACTIONS, SpatialExtractor, SpatialPolicy
 
 OBSERVATIONS=spaces.Dict({"global":spaces.Box(-np.inf,np.inf,(16,),dtype=np.float32),
                          "mb":spaces.Box(-np.inf,np.inf,(4,20,30),dtype=np.float32)})
@@ -119,7 +120,7 @@ class AuxBuffer(DictRolloutBuffer):
         if self.label_source is None:raise ValueError("Auxiliary label source is missing")
         labels=self.label_source.last_block_reward.copy()
         consumed=self.label_source.last_consumed_action
-        expected=np.stack([wire_map(action_map(a)) for a in np.asarray(action).reshape(self.n_envs,35)])
+        expected=np.stack([wire_map(map_action(a)) for a in np.asarray(action).reshape(self.n_envs,-1)])
         if not np.array_equal(expected,consumed):
             raise ValueError("Raw Gaussian action does not match the encoder-consumed map")
         self.auxiliary[self.pos]=labels
@@ -243,10 +244,13 @@ class AuxPPO(PPO):
                                         trained_frames=self.trained_frames,num_timesteps=self.num_timesteps,
                                         max_approx_kl_observed=float(max(observed_kl)),
                                         stopped_by_target_kl=int(stop),target_kl=float(self.target_kl or 0.0))
-        coarse=12*np.tanh(np.clip(self.rollout_buffer.actions,-10,10))
+        actions=self.rollout_buffer.actions.reshape(-1,self.action_space.shape[0])
+        coarse=np.stack([map_action(a) for a in actions])
         self.last_update_metrics.update(policy_std=self.policy.log_std.exp().mean().item(),
             coarse_delta_mean=float(coarse.mean()),coarse_delta_std=float(coarse.std()),
-            coarse_delta_saturated_fraction=float((np.abs(coarse)>=11.5).mean()))
+            coarse_delta_saturated_fraction=float((np.abs(coarse)>=(5.75 if self.action_space.shape==(36,) else 11.5)).mean()),
+            requested_map_spatial_std=float(coarse.std(axis=(1,2)).mean()),
+            requested_map_abs_delta=float(np.abs(coarse).mean()))
         # Persist diagnostics to metrics/updates.jsonl (not only SB3's console logger).
         old_values=self.rollout_buffer.values.flatten()
         returns=self.rollout_buffer.returns.flatten()
@@ -267,7 +271,13 @@ class AuxPPO(PPO):
         self.logger.record("train/std",self.policy.log_std.exp().mean().item())
 
 def build(env,seed,device="cpu",**options):
-    if env.observation_space!=OBSERVATIONS or env.action_space!=ACTIONS:raise ValueError("Method space differs")
-    return AuxPPO("MultiInputPolicy",AuxiliaryLabels(env),seed=seed,device=device,
-                  policy_kwargs={"features_extractor_class":StatsCNNExtractor,"net_arch":[],
-                                 "share_features_extractor":False,"normalize_images":False},**options)
+    enhanced=env.observation_space==DEV_OBSERVATIONS
+    spatial=env.action_space==DEV_ACTIONS
+    if ((env.observation_space!=OBSERVATIONS and not enhanced)
+            or (env.action_space!=ACTIONS and not spatial) or (spatial and not enhanced)):
+        raise ValueError("Method space differs")
+    policy=SpatialPolicy if spatial else "MultiInputPolicy"
+    kwargs={"features_extractor_class":SpatialExtractor if enhanced else StatsCNNExtractor,"net_arch":[],
+            "share_features_extractor":False,"normalize_images":False}
+    if spatial:kwargs['log_std_init']=-1.8
+    return AuxPPO(policy,AuxiliaryLabels(env),seed=seed,device=device,policy_kwargs=kwargs,**options)

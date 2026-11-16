@@ -1,6 +1,6 @@
 """Train/validate/resume the declared H.266 adaptation, using SB3 PPO.
 
-Examples and the exact mapping are in README_RL_RC_DOT.md. Test videos are
+Examples and the exact mapping are in README.md. Test videos are
 never accessed by this runner. A session export is generated in finally.
 """
 import argparse
@@ -21,6 +21,7 @@ from .data import ASSETS,MINI_COUNTS,FrozenDetector,VideoCatalog,atomic_json,dig
 from .environment import VVenCEnv
 from .method import SCHEMA
 from .model import build
+from .qp_development import PROFILES,definition,check_profile
 
 class BudgetStop(Exception):
     pass
@@ -41,7 +42,8 @@ def make_env(spec,rank):
           "detector_device":str(detector.device)}),flush=True)
     return VVenCEnv(catalog,detector,spec["encoder"],Path(spec["output"])/"episodes"/f"worker{rank}",
                     frame_limit=spec["frames"],threads=spec["encoder_threads"],
-                    random_windows=spec.get("dataset_mode","full")=="mini")
+                    random_windows=spec.get("dataset_mode","full")=="mini",
+                    agent_profile=spec.get('agent_profile','paper'))
 
 def validate(model,spec,deadline=float("inf"),detector_factory=FrozenDetector,catalog_factory=VideoCatalog):
     catalog=catalog_factory(spec["input_root"],spec["ffmpeg"],spec["ffprobe"],
@@ -64,12 +66,13 @@ def validate(model,spec,deadline=float("inf"),detector_factory=FrozenDetector,ca
                     if time.monotonic()>=deadline:raise BudgetStop("Validation interrupted by session budget")
                     env=VVenCEnv(catalog,detector,spec["encoder"],Path(spec["output"])/"validation_media"/str(model.completed_rollouts),
                                 split="val",frame_limit=spec["validation_frames"],threads=spec["encoder_threads"],
-                                fixed_video=video,fixed_rate=rate,mode=mode)
+                                fixed_video=video,fixed_rate=rate,mode=mode,
+                                agent_profile=spec.get('agent_profile','paper'))
                     try:
                         obs,_=env.reset(seed=spec["seed"])
                         while True:
                             if time.monotonic()>=deadline:raise BudgetStop("Validation interrupted by session budget")
-                            action=model.predict(obs,deterministic=True)[0] if mode=="live" else np.zeros(35)
+                            action=model.predict(obs,deterministic=True)[0] if mode=="live" else np.zeros(env.action_space.shape)
                             obs,_,done,_,info=env.step(action)
                             if done:break
                         pair[name]=info["episode"]
@@ -77,15 +80,23 @@ def validate(model,spec,deadline=float("inf"),detector_factory=FrozenDetector,ca
                     finally:env._close_episode()
                 points.append({"video_id":video,"rate_kbps":rate,**pair})
     finally:detector.close()
-    return {"score":float(np.mean([p["agent"]["mean_reward"] for p in points])),
-            "anchor_score":float(np.mean([p["anchor"]["mean_reward"] for p in points])),
-            "zero_score":float(np.mean([p["zero"]["mean_reward"] for p in points])),
+    development=spec.get('agent_profile','paper')!='paper'
+    key='objective_score' if development else 'mean_reward'
+    return {"score":float(np.mean([p["agent"][key] for p in points])),
+            "anchor_score":float(np.mean([p["anchor"][key] for p in points])),
+            "zero_score":float(np.mean([p["zero"][key] for p in points])),
             "macro_delta_precision":float(np.mean([p["agent"]["mean_precision"]-p["anchor"]["mean_precision"] for p in points])),
             "macro_delta_precision_vs_zero":float(np.mean([p["agent"]["mean_precision"]-p["zero"]["mean_precision"] for p in points])),
             "macro_rate_ratio_vs_anchor":float(np.mean([p["agent"]["actual_kbps"]/p["anchor"]["actual_kbps"]-1 for p in points])),
             "macro_rate_ratio_vs_zero":float(np.mean([p["agent"]["actual_kbps"]/p["zero"]["actual_kbps"]-1 for p in points])),
+            'macro_delta_f1':float(np.mean([p['agent']['f1']-p['anchor']['f1'] for p in points])),
+            'macro_delta_objective':float(np.mean([p['agent']['objective_score']-p['anchor']['objective_score'] for p in points])),
+            'mean_requested_abs_delta':float(np.mean([p['agent']['requested_abs_delta'] for p in points])),
+            'mean_requested_spatial_std':float(np.mean([p['agent']['requested_spatial_std'] for p in points])),
+            'macro_delta_actual_qp':float(np.mean([p['agent']['mean_qp']-p['anchor']['mean_qp'] for p in points])),
             "points":points,"policy_sha256":policy_digest(model),"completed_rollouts":model.completed_rollouts,
-            "num_timesteps":model.num_timesteps,"selection":"macro mean of per-frame training reward on Validation only"}
+            "num_timesteps":model.num_timesteps,"selection":('macro final clip objective (same as undiscounted training return)' if development
+                else 'macro mean of per-frame training reward on Validation only')}
 
 class SaveAndValidate(BaseCallback):
     def __init__(self,spec,contract,deadline=float("inf"),validator=validate):
@@ -152,12 +163,14 @@ def ppo_options(args):
             or args.ppo_target_kl<=0 or not np.isfinite(args.ppo_aux_loss_coef)
             or not 0<=args.ppo_aux_loss_coef<=1):
         raise ValueError("PPO requires finite positive learning rate/target KL, aux coefficient [0,1] and at least one optimization epoch")
-    return {"learning_rate":float(args.ppo_learning_rate),
+    result={"learning_rate":float(args.ppo_learning_rate),
             "n_epochs":int(args.ppo_epochs),"target_kl":float(args.ppo_target_kl),
             "aux_loss_coef":float(args.ppo_aux_loss_coef)}
+    if getattr(args,'agent_profile','paper')!='paper':result.update(gamma=1.0)
+    return result
 
 def contract_for(spec):
-    return {"schema":RUN_SCHEMA,"native_schema":SCHEMA,"source_fingerprint":source_fingerprint(),
+    result={"schema":RUN_SCHEMA,"native_schema":SCHEMA,"source_fingerprint":source_fingerprint(),
             "dataset_sha256":digest(ASSETS/"dataset_lock.json"),"baseline_lock_sha256":digest(ASSETS/"baseline_lock.json"),
             "encoder_sha256":digest(spec["encoder"]),"detector_weights_sha256":digest(spec["weights"]),
             "profile":"480x320_30fps_medium_ctu32_dqp2_fpp0_10bit_lookahead10",
@@ -168,12 +181,20 @@ def contract_for(spec):
             "reward":"paper=20*confidence_ordered_precision-abs(log(prefix_actual_bps/target_bps)); PPO_learning=0.05*paper",
             "rate_sampling":"uniform integer kbps [50,200]","action":"Gaussian35;clip10;tanh*12;bilinear20x30;native-QPA-relative QG delta;single-delta/2",
             "validation":{"videos":spec["validation_videos"],"rates":spec["validation_rates"],"frames":spec["validation_frames"]}}
+    profile=check_profile(spec.get('agent_profile','paper'))
+    result['agent_profile']=profile
+    if profile!='paper':
+        result['development']=definition(profile)
+        result['reward']=result['development']['reward'];result['action']=result['development']['action']
+        result['algorithm']='SB3 PPO-Clip + GAE, gamma=1, independent actor/critic, spatial Gaussian residual control where selected'
+    return result
 
 def parser():
     p=argparse.ArgumentParser(description=__doc__)
     for name in ("input-root","encoder","yolo-repo","weights","output"):p.add_argument("--"+name,type=Path,required=True)
     p.add_argument("--decoder",type=Path,required=True,help="Pinned VVdeC binary for preflight")
     p.add_argument("--mode",choices=("new","resume"),default="new")
+    p.add_argument('--agent-profile',choices=PROFILES,default='paper',help='qpdev1 is the proposed state + reward + spatial QP method; paper is the technical control')
     p.add_argument("--resume-from",type=Path)
     p.add_argument("--total-timesteps",type=int,default=20_000_000)
     p.add_argument("--additional-timesteps",type=int,default=0,help="Optional session interaction budget, capped by total-timesteps")
@@ -270,6 +291,13 @@ def main():
         callback=SaveAndValidate(spec,contract,deadline)
         callback.init_callback(model)
         callback.save() # durable initial/loaded policy before any codec rollout
+        if spec['agent_profile']!='paper' and a.mode=='new':
+            initial=validate(model,spec,deadline)
+            name='initial_policy.json';atomic_json(output/'validations'/name,initial)
+            ref=json.loads((output/'progress.json').read_text())['latest']
+            callback.best={**ref,'score':initial['score'],'validation':'validations/'+name}
+            callback.save()
+            print('INITIAL_POLICY_VALIDATION',json.dumps({k:v for k,v in initial.items() if k!='points'}),flush=True)
         remaining=a.total_timesteps-model.num_timesteps
         if a.additional_timesteps:remaining=min(remaining,a.additional_timesteps)
         if remaining>0:model.learn(remaining,reset_num_timesteps=False,callback=callback)
@@ -290,6 +318,13 @@ def main():
                 for child in env.processes:
                     if child.is_alive():child.terminate()
         if (output/"progress.json").exists():
+            if spec['agent_profile']!='paper':
+                try:
+                    from .development_report import summarize
+                    print('DEVELOPMENT_SCREEN',json.dumps(summarize(output)),flush=True)
+                except Exception as error:
+                    atomic_json(output/'reports/report_failure.json',{'type':type(error).__name__,'message':str(error)})
+                    print('DEVELOPMENT_REPORT_FAILED',str(error),flush=True)
             destination=output/"exports"/f"RL_RC_DOT_VVC_SESSION_{time.time_ns()}.zip"
             print("SESSION_EXPORT",json.dumps(export_run(output,destination)),flush=True)
     if failed is not None:raise failed

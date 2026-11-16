@@ -41,7 +41,7 @@ def source_fingerprint():
     value.update((root/"CMakeLists.txt").read_bytes())
     for directory in ("source", "include", "scripts/rl_rc_dot", "cmake"):
         for path in sorted((root / directory).rglob("*")):
-            if directory=="scripts/rl_rc_dot" and (path.name.startswith("test_") or path.name in ("evaluate.py","setup_kaggle.py","preflight.py")):
+            if directory=="scripts/rl_rc_dot" and (path.name.startswith("test_") or path.name in ("evaluate.py","setup_kaggle.py","preflight.py","development_report.py")):
                 continue # QA/report-only changes do not invalidate trained weights.
             if path.is_file() and (path.suffix in (".h", ".cpp", ".py", ".json", ".cmake", ".in") or path.name=="CMakeLists.txt"):
                 value.update(path.relative_to(root).as_posix().encode())

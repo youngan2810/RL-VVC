@@ -9,6 +9,51 @@ state/action/reward và các khác biệt với paper nằm trong
 
 ## Phạm vi và phiên bản hiện tại
 
+### Phương pháp đề xuất QP Development v1
+
+Notebook phát triển khuyến nghị: [VVC_RL QPDev1 Train + Validation](notebooks/VVC_RL_QPDev1_Train_Validation_Kaggle.ipynb)
+
+- **PPO-Clip + GAE**, Gaussian36: một offset toàn frame giới hạn ±2 và 35
+  giá trị tạo phần bù không gian giới hạn ±4; tổng ΔQP nằm trong ±6. Actor
+  convolution giữ 35 đặc trưng không gian và có hai đầu frame/vùng. Policy
+  xác định ban đầu sinh map 0; sampling training có độ lệch chuẩn khởi tạo exp(-1,8)
+- State **32 global + 6 bản đồ**: giữ 16+4 cũ, bổ sung độ lớn trung bình/std
+  trước chuẩn hóa, target/ngân sách bit, lịch sử AU, QPA tuyệt đối và action
+  được yêu cầu trước đó trong coding order. Không dùng detector làm đầu vào policy
+- Mục tiêu clip: `mean(frame F1) - 0.1*abs(log(final bitrate / target))`.
+  Reward bước dùng `F1/N` cộng chênh lệch chi phí bitrate prefix; với **gamma=1**,
+  tổng reward bằng đúng mục tiêu Validation cuối clip. Frame không TP/FP/FN
+  có F1=0. F1 là bảo toàn pseudo-label, không phải AP trên annotation thật
+- Auxiliary mới: F1 cục bộ trên diện tích box, gồm vùng đối tượng nguồn bị
+  bỏ sót và vùng false-positive; target có cùng matching một-một với metric
+- Validation có **initial policy / anchor / zero / learned**, chọn checkpoint
+  theo mục tiêu clip. Nếu training không cải thiện, best có thể vẫn là initial
+- Xuất learning curves, CSV theo video/bitrate và hình **ΔQP yêu cầu / QP thực
+  final CU**. Trace final CU giữ ba POC đầu/giữa/cuối mỗi clip Validation để
+  giới hạn dung lượng; trajectory/action giữ đủ frame. Không coi ΔQP khác 0
+  hoặc test kỹ thuật PASS là hiệu quả detection
+
+Phiên đầu: `AGENT_PROFILE='qpdev1'`, `PHASE='trial'`, `MODE='new'`;
+20.480 tương tác, Train16/Val4, 256 frame, Val50/120/200, collector T4×2,
+PPO CPU, tối đa 11h45 gồm setup. Không chạy Test30 khi chọn cấu hình
+
+Đối chứng cùng ngân sách: phiên riêng `AGENT_PROFILE='paper'`, `MODE='new'`.
+`qpdev-reward` thay reward+aux, `qpdev-state` thêm state+extractor; đây là
+so sánh theo giai đoạn, không cô lập từng thay đổi như ablation đầy đủ.
+Giữ mốc trước phát triển ở commit `6ea5c054d8435376bf086a620d99b21345c391a7`
+
+Screening đã định trước: best đã train tốt hơn initial và anchor về objective;
+clip F1 macro tăng ít nhất 0,2 điểm %, bitrate macro tăng không quá 1%,
+p95 tăng không quá 5%, và >1% ô có |ΔQP yêu cầu| ≥0,5. Đây là ngưỡng
+thử nghiệm để quyết định chạy tiếp, chưa chứng minh mAP/BD-rate hoặc ý nghĩa
+thống kê. Cần kiểm tra nhiều seed và Test chưa dùng để tinh chỉnh
+
+**Không resume checkpoint trước phát triển vào QPDev.** Muốn tiếp tục một run
+giữ nguyên profile/phase/source/config, đặt MODE=resume và thêm SAFE đúng run.
+SAFE chứa checkpoint, metrics, validations, reports và bằng chứng trajectory.
+Các hướng dẫn adapter/3 dưới đây mô tả đối chứng lịch sử; QPDev dùng mục tiêu,
+state và action đã nêu ở mục này
+
 - Điều khiển bản đồ ΔQP bằng PPO; chưa triển khai phát triển Partition/MTS
 - Đã sửa lỗi cộng lặp ΔQP ở inter QG, hợp đồng `native-qpa-single-delta/2`.
   QG con dùng QP nền QPA riêng; mỗi QG chỉ cộng một lần ΔQP của vùng đó

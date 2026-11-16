@@ -1,6 +1,9 @@
 # RL-RC-DoT to VVenC: technical specification, adapter/3
 
-Current method definitions are below; older results are explicitly historical.
+The definitions below document the retained `paper` technical control.
+The proposed `qpdev1` method is specified in the [main README](../../README.md#phương-pháp-đề-xuất-qp-development-v1)
+and versioned in `qp_development.definition()`. Old test results predate the QG
+repair and do not establish the learning quality of the proposed method.
 Operational instructions: [project README](../../README.md).
 
 ## QG correctness repair 2026 11 15

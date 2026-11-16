@@ -86,4 +86,4 @@ jobs:
         env:
           RCDOT_TEST_ENCODER: ${{ github.workspace }}/bin/release-static/vvencapp
           OMP_NUM_THREADS: '2'
-        run: python -m unittest scripts.rl_rc_dot.test_native_integrated -v
+        run: python -m unittest scripts.rl_rc_dot.test_native_integrated scripts.rl_rc_dot.test_qp_development.DevelopmentNative -v

@@ -60,10 +60,12 @@ def boxes_checked(boxes):
             or (boxes[:,4]<0).any() or (boxes[:,4]>1).any()):raise ValueError("Invalid detection coordinates/confidence")
     return boxes
 
-def detection_targets(raw,reconstructed):
+def detection_assignments(raw,reconstructed):
+    """Canonical confidence-ordered one-to-one matches, shared by metrics and auxiliary labels."""
     raw,pred=boxes_checked(raw),boxes_checked(reconstructed)
     available=set(range(len(raw)))
     correct=np.zeros(len(pred),dtype=bool)
+    matched=np.full(len(pred),-1,dtype=np.int64)
     for i in np.argsort(-pred[:,4],kind="stable"):
         best,maximum=None,-1.
         for j in sorted(available):
@@ -72,7 +74,11 @@ def detection_targets(raw,reconstructed):
             union=float(np.prod(pred[i,2:4]-pred[i,:2])+np.prod(raw[j,2:4]-raw[j,:2])-overlap)
             iou=overlap/union if union>0 else 0.
             if iou>maximum:best,maximum=j,iou
-        if best is not None and maximum>=.5:correct[i]=True;available.remove(best)
+        if best is not None and maximum>=.5:correct[i]=True;matched[i]=best;available.remove(best)
+    return raw,pred,correct,matched
+
+def detection_targets(raw,reconstructed):
+    raw,pred,correct,_=detection_assignments(raw,reconstructed)
     labels=np.zeros(GRID,dtype=np.float32);counts=np.zeros(GRID,dtype=np.int32)
     for box,matched in zip(pred,correct):
         x=min(29,max(0,int(((box[0]+box[2])/2)//16)))

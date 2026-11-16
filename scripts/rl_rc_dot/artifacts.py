@@ -130,7 +130,7 @@ def export_run(output,destination,include_evidence=True):
     for name in ("method.json","progress.json","session.json","dataset_selection.json","history.json","README_RUN.txt","failure.json","preflight/PREFLIGHT.json"):
         p=output/name
         if p.is_file():selected.add(p)
-    for name in ("metrics","validations"):
+    for name in ("metrics","validations","reports"):
         p=output/name
         if p.exists():selected.update(v for v in p.rglob("*") if v.is_file())
     if include_evidence:

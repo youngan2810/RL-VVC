@@ -68,14 +68,14 @@ def run_pair_method(model, catalog, detector, args, root, video_id, rate, name, 
         return saved
     env = VVenCEnv(catalog, detector, args.encoder, root / name, split="test", frame_limit=args.frames,
                    threads=args.encoder_threads, fixed_video=video_id, fixed_rate=rate,
-                   mode="anchor" if name == "vvenc" else "live")
+                   mode="anchor" if name == "vvenc" else "live",agent_profile=identity.get('method',{}).get('agent_profile','paper'))
     start = time.monotonic()
     try:
         obs, _ = env.reset(seed=args.seed)
         done = False
         while not done:
             if time.monotonic()>=args.deadline:raise EvaluationStop("Soft evaluation budget reached")
-            action = np.zeros(35) if name == "vvenc" else model.predict(obs, deterministic=True)[0]
+            action = np.zeros(env.action_space.shape) if name == "vvenc" else model.predict(obs, deterministic=True)[0]
             obs, _, done, _, info = env.step(action)
         env.trajectory.close()
         env.trajectory = None
