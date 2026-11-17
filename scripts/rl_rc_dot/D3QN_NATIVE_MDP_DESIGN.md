@@ -134,7 +134,7 @@ python -m scripts.rl_rc_dot.d3qn_native_runner \
   --yolo-repo /path/to/pinned/yolov5 \
   --weights /path/to/pinned/yolov5n.pt \
   --output /kaggle/working/d3qn_v2_probe_001 \
-  --device cuda:0 --val-videos 1 --val-rates 120
+  --device cuda:0 --val-videos 4 --val-rates 50,120,200
 
 python -m scripts.rl_rc_dot.d3qn_native_runner \
   --phase train \
@@ -147,9 +147,12 @@ python -m scripts.rl_rc_dot.d3qn_native_runner \
   --device cuda:0 --train-steps 5120 --val-videos 1 --val-rates 120
 ```
 
-The default native probe uses six *representative* QP actions
-(not all 25) and one Validation video/rate to limit cost. It is
-a functionality check, not a performance conclusion. The code
+The native probe uses six *representative* QP policies (not all 25).
+Current runner defaults to Mini Val4 and 50/120/200 kbps:
+4 videos x 3 target rates x 6 policies = 72 codec runs of 256 frames.
+For a short technical smoke test override with `--val-videos 1 --val-rates 120`.
+These runs are functionality/headroom probes, not proof of a rate-matched
+coding-efficiency improvement. The code
 does not yet implement checkpoint resume, optimized early stopping,
 ground-truth evaluation, full-rate curves, or full multi-seed sweep.
 An experiment missing those checks is not a paper-ready result.
