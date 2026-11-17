@@ -25,6 +25,7 @@ PROTOCOL = 'native-masked-d3qn-qp/v2'
 DATASET_SPLIT_SEED = 20261111  # Fixed across ALL agent seeds; same Mini16/Val4 as PPO.
 FIXED_CONTROLS = (
     ('qpa_anchor',NEUTRAL_ACTION),
+    ('global_minus2',0),                # (-2,-2), prior strongest simple PPO-era heuristic
     ('global_minus1',6),                # (-1,-1)
     ('global_plus1',18),                # (+1,+1)
     ('roi_minus1_bg_plus1',8),          # (-1,+1)
@@ -51,7 +52,7 @@ def parser():
                    help='Start index in locked Mini Val4 (for chunked Kaggle validation)')
     p.add_argument('--val-rates',default='50,120,200')
     p.add_argument('--val-methods',default='all',
-                   help='Comma-separated subset of qpa_anchor, global_minus1, global_plus1, '
+                   help='Comma-separated subset of qpa_anchor, global_minus2, global_minus1, global_plus1, '
                         'roi_minus1_bg_plus1, roi_minus2_bg_plus2, roi_zero_bg_plus2, trained_d3qn')
     p.add_argument('--max-hours',type=float,default=0.,
                    help='Optional wall clock budget including Kaggle setup')
