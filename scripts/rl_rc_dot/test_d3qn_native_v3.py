@@ -100,6 +100,24 @@ class StableD3QNContracts(unittest.TestCase):
                 from scripts.rl_rc_dot.d3qn_agent_v2 import MaskedD3QN
                 MaskedD3QN.load(ck,identity=identity,device='cpu')
 
+    def test_masked_actions_during_v3_training(self):
+        model=StableMaskedD3QN(seed=4,n_step=3,batch_size=4,
+                               warmup=4,train_every=1,reward_scale=1.)
+        updates=[]
+        for i in range(9):
+            obs=synthetic_obs(i)
+            obs['legal'][:]=False
+            obs['legal'][NEUTRAL_ACTION]=True
+            nex=synthetic_obs(i+1)
+            nex['legal'][:]=False
+            nex['legal'][NEUTRAL_ACTION]=True
+            self.assertEqual(model.predict(obs,epsilon=1.),NEUTRAL_ACTION)
+            result=model.observe(obs,NEUTRAL_ACTION,0.01,nex,i==8)
+            if result is not None:updates.append(result)
+        self.assertTrue(updates)
+        self.assertTrue(all(np.isfinite(x['q_gap_valid']) for x in updates))
+        self.assertTrue(all(abs(x['q_gap_valid'])<1e-5 for x in updates))
+
     def test_finite_horizon_gamma_invariant(self):
         with self.assertRaises(ValueError):
             StableMaskedD3QN(gamma=.99)
