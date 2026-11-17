@@ -138,6 +138,7 @@ class D3QNNativeEnv:
              'tp':tp,'fp':fp,'fn':fn,'frame_f1':f1,'reward':reward,
              'au_bits':post['au_bits'],'cumulative_bits':post['cumulative_bits'],
              'reconstruction_sha256':hashlib.sha256(rec).hexdigest()}
+        if audit is not None:row['native_action_audit']=audit
         self.trace.write(json.dumps(row,allow_nan=False)+'\n')
         self.trace.flush()
         if not self.retain_media:
@@ -150,7 +151,6 @@ class D3QNNativeEnv:
               'delta_map':delta,'codec_post':post}
         if audit is not None:
             info['native_action_audit']=audit
-            row['native_action_audit']=audit
         if done:
             actual_bps=self.native.bits*30/self.frames
             objective=clip_objective(self.frame_f1,self.native.bits,
