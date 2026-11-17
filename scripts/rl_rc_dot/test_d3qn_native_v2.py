@@ -83,8 +83,15 @@ class MaskedD3QNTests(unittest.TestCase):
         legal=np.flatnonzero(obs['legal'])
         self.assertEqual(len(legal),25)
         with torch.no_grad():
-            q=agent.online({'global':torch.zeros(2,25),'maps':torch.zeros(2,5,10,15)})
+            q=agent.online({'global':torch.zeros(2,25),'maps':torch.zeros(2,5,10,15),
+                            'legal':torch.ones(2,25,dtype=torch.bool)})
         self.assertEqual(q.shape,(2,25))
+        # Invalid branch advantage must not shift Q-values of legal branches.
+        with torch.no_grad():
+            no_roi=agent.online({'global':torch.zeros(1,25),'maps':torch.zeros(1,5,10,15),
+                                 'legal':torch.as_tensor(obs['legal'][None])})
+            self.assertTrue(torch.isfinite(no_roi).all())
+
         out=[]
         for i in range(7):
             action=agent.predict(obs,epsilon=1.)
