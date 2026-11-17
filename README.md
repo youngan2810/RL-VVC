@@ -125,8 +125,7 @@ Giữ nguyên LICENSE/COPYRIGHT/AUTHORS và giấy phép thư viện bên thứ 
 
 ## 8. Learning-check: theo dõi agent có học đúng kỳ vọng không
 
-Notebook pilot theo mốc: [VVC_D3QN_Mini16_Val4_LearningCheck_Kaggle.ipynb](notebooks/VVC_D3QN_Mini16_Val4_LearningCheck_Kaggle.ipynb)
-(sẽ được thêm sau khi hoàn thiện notebook). **Không dùng Test30**.
+Notebook Kaggle pilot theo mốc được phát hành riêng dưới tên **`VVC_D3QN_Mini16_Val4_LearningCheck_Kaggle.ipynb`** (không nằm trong repository này). **Không dùng Test30**.
 
 - 16 video Train: 16 episode đầu phủ đủ 16 ID; 20 episode = 5.120 transitions.
 - 4 video Val: đo **cùng 4 video** và **120 kbps target** ở các mốc
