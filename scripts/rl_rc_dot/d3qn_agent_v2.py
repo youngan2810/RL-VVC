@@ -184,8 +184,21 @@ class MaskedD3QN:
         self.updates+=1
         if self.updates%self.target_sync_updates==0:
             self.target.load_state_dict(self.online.state_dict())
+        # Do not hide a collapsed 1-action policy behind a decreasing TD loss.
+        with torch.no_grad():
+            values=self.online(obs_b)
+            highest=values.masked_fill(~obs_b['legal'],float('-inf')).max(dim=1).values
+            lowest=values.masked_fill(~obs_b['legal'],float('inf')).min(dim=1).values
+            q_gap=(highest-lowest).mean()
+            q_max=highest.mean()
+            chosen_greedy=values.masked_fill(~obs_b['legal'],float('-inf')).argmax(dim=1)
+            unique_greedy=int(torch.unique(chosen_greedy).numel())
+        if not torch.isfinite(q_gap) or not torch.isfinite(q_max):
+            raise FloatingPointError('Nonfinite D3QN Q-value diagnostics')
         return {'loss':float(loss.detach()),'mean_abs_td':float((td-predicted).abs().mean().detach()),
-                'grad_norm':float(grad),'updates':self.updates}
+                'grad_norm':float(grad),'updates':self.updates,
+                'q_gap_valid':float(q_gap),'q_max_valid':float(q_max),
+                'unique_greedy_actions_in_batch':unique_greedy}
 
     def save(self,path,*,identity,next_episode_seed=None):
         """Atomic full replay + optimizer + RNG snapshot at an episode boundary."""
