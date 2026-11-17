@@ -36,7 +36,8 @@ jobs:
           python-version: '3.11'
       - name: Native dependencies
         run: |
-          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r scripts/rl_rc_dot/requirements.txt
           sudo apt-get update -qq
           sudo apt-get install -y -qq cmake build-essential ffmpeg
       - name: Build VVenC
