@@ -1,224 +1,108 @@
-# RL-VVC
+# RL-VVC — Masked Dueling Double DQN (D3QN) for Task-Aware QP
 
-**Lần thử tiếp theo sau QBins5120:** dùng
-[VVC_RL_QBins_LearningCheck_Kaggle.ipynb](notebooks/VVC_RL_QBins_LearningCheck_Kaggle.ipynb).
-Giữ nguyên kiến trúc/state/reward/Auxiliary và action mapping; cùng5120tương tác,
-Mini16/4 và seed. Giữ LR3e-5, sửa head sang orthogonal gain0,01 (cùng kích thước mạng),
-Validation tại0/5/10, thêm fixed ΔQP−2 làm đối chứng,
-ghi KL sau update và xác suất/margin của head toànframe. Đây là thử nghiệm tối ưu hóa
-có kiểm soát, chưa phải bằng chứng coding tốt hơn. MODE=new,1input MOV như trước,
-T4×2; không nạp checkpoint source cũ. Output
-`VVC_RL_QBINS_LEARNINGCHECK_LATEST_KAGGLE_SAFE.zip`. Chưa chạy dài/Test30.
-Giữ nguyên ngưỡng rate/PSNR và chỉ qua screen khi objective hơn cảfixed−2.
+> **Nhánh:** `experiment/d3qn-native-mdp-v2`  
+> **Trạng thái:** source nghiên cứu; chưa xác nhận chạy thành công với VVenC/VVdeC/YOLO trên Kaggle, chưa có kết quả D3QN hay chứng minh tốt hơn VVenC QPA.  
+> **Thuật toán chính:** **Masked Dueling Double DQN**, không phải PPO.
 
-Ánh xạ phương pháp RL-RC-DoT sang H.266/VVenC. Repo chính:
-**https://github.com/youngan2810/RL-VVC**, nhánh **main**
+README này dành cho **nhánh D3QN**. PPO vẫn được giữ trên nhánh [`main`](https://github.com/youngan2810/RL-VVC/tree/main), trong notebook và module cũ để đối chứng lịch sử; không dùng `session.py` hay notebook PPO để huấn luyện D3QN.
 
-Đây là hướng dẫn chính cho input, training, resume và evaluation. Đặc tả
-state/action/reward và các khác biệt với paper nằm trong
-[METHOD_MAPPING.md](scripts/rl_rc_dot/METHOD_MAPPING.md)
+**Đặc tả khoa học:** [D3QN_NATIVE_MDP_DESIGN.md](scripts/rl_rc_dot/D3QN_NATIVE_MDP_DESIGN.md).
 
-## Phạm vi và phiên bản hiện tại
+## 1. Mục tiêu và phạm vi
 
-### Sửa riêng action — 17/11/2026
+Trước mắt điều khiển **ΔQP** phục vụ phát hiện xe bằng YOLO trên **VVenC/H.266**. D3QN điều chỉnh quanh native **QPA**; bitstream vẫn được tạo và giải mã bằng codec thực. **Partition (QT/BT/TT)** và **MTS** là hướng phát triển sau, chưa triển khai.
 
-QPDev1 Gaussian đã chạy đủ 20.480 tương tác nhưng mean action dưới 0,084 QP,
-nên toàn bộ Validation giữ bitstream như VVC. Giữ bản đó làm đối chứng.
-Profile sửa **`qpdev1-qbins`** chỉ đổi đầu action và ánh xạ: PPO MultiCategorical
-chọn ΔQP nguyên {-2,-1,0,1,2}; các ô trong CTU32 đồng nhất để không triệt tiêu
-trong QG. State, extractor, Critic, Auxiliary, reward, optimizer và dataset giữ nguyên
+Không mặc định D3QN tốt hơn PPO: muốn so sánh thuật toán, phải huấn luyện PPO với **cùng MDP (state/action/reward)** của D3QN v2.
 
-Dùng [notebook ActionFix Short](notebooks/VVC_RL_QPDev1_ActionFix_Short_Kaggle.ipynb):
-`MODE='new'`, 5.120 tương tác đầu, Train16/Val4, T4×2, cùng MOV input cũ.
-Không resume checkpoint Gaussian. Chỉ chạy training sau gate map/QG/QP,
-bitstream và VVdeC PASS; chưa tự chạy dài hoặc Test30. Validation có Random,
-No-op/anchor và policy đã train. SAFE lưu chẩn đoán effective QP và reward
+## 2. Dataset: BDD100K, giống bản PPO về split
 
-Chi tiết đường action, phương án so sánh, kiểu dữ liệu và giới hạn nằm trong
-[audit kỹ thuật](scripts/rl_rc_dot/METHOD_MAPPING.md#integer-action-repair-audit-2026-11-17).
-Qua kiểm thử cơ chế không đồng nghĩa học được policy tốt hơn; phải đọc kết quả
-short Validation trước khi quyết định training tiếp
+| Split | Mini — dùng hiện tại | Full — chưa dùng |
+|---|---:|---:|
+| **Train** | **16 video** | 65 |
+| **Validation** | **4 video** | 7 |
+| **Test** | **30 video — giữ nguyên, chưa dùng** | 100 |
 
-### Phương pháp đề xuất QP Development v1
+- Mini được chọn và khóa từ cùng [`dataset_lock.json`](scripts/rl_rc_dot/assets/dataset_lock.json), `seed=20261111`; không chia lại hoặc đụng Test để chọn mô hình.
+- Các video `.mov` không có trong GitHub. Mount dữ liệu BDD100K tại Kaggle, chẳng hạn `/kaggle/input/datasets/robikscube/driving-video-with-object-tracking`.
+- `VideoCatalog` lấy dataset theo `mode='mini'`, kiểm tra Train16/Val4. Train lấy ngẫu nhiên video từ **pool 16 video, có hoàn lại**, và cửa sổ **256 frame** tại offset 0/128/256/384/512; 5.120 transitions không bảo đảm đã xem đủ 16 video.
+- Validation mặc định **Val4 × 50/120/200 kbps = 12 video–rate points**, mỗi clip 256 frame đầu. Mỗi point còn chạy nhiều phương pháp đối chứng.
+- Tiền xử lý chung: 480×320, 30 fps, YUV420p. Native VVenC: QPA bật, CTU32, MaxCuDQPSubdiv=2, 10-bit nội bộ.
+- Full65/Val7 và Test30 hiện **chưa có runner riêng** trong nhánh D3QN.
 
-Notebook phát triển khuyến nghị: [VVC_RL QPDev1 Train + Validation](notebooks/VVC_RL_QPDev1_Train_Validation_Kaggle.ipynb)
+## 3. State – Action – Reward riêng cho D3QN
 
-- **PPO-Clip + GAE**, Gaussian36: một offset toàn frame giới hạn ±2 và 35
-  giá trị tạo phần bù không gian giới hạn ±4; tổng ΔQP nằm trong ±6. Actor
-  convolution giữ 35 đặc trưng không gian và có hai đầu frame/vùng. Policy
-  xác định ban đầu sinh map 0; sampling training có độ lệch chuẩn khởi tạo exp(-1,8)
-- State **32 global + 6 bản đồ**: giữ 16+4 cũ, bổ sung độ lớn trung bình/std
-  trước chuẩn hóa, target/ngân sách bit, lịch sử AU, QPA tuyệt đối và action
-  được yêu cầu trước đó trong coding order. Không dùng detector làm đầu vào policy
-- Mục tiêu clip: `mean(frame F1) - 0.1*abs(log(final bitrate / target))`.
-  Reward bước dùng `F1/N` cộng chênh lệch chi phí bitrate prefix; với **gamma=1**,
-  tổng reward bằng đúng mục tiêu Validation cuối clip. Frame không TP/FP/FN
-  có F1=0. F1 là bảo toàn pseudo-label, không phải AP trên annotation thật
-- Auxiliary mới: F1 cục bộ trên diện tích box, gồm vùng đối tượng nguồn bị
-  bỏ sót và vùng false-positive; target có cùng matching một-một với metric
-- Validation có **initial policy / anchor / zero / learned**, chọn checkpoint
-  theo mục tiêu clip. Nếu training không cải thiện, best có thể vẫn là initial
-- Xuất learning curves, CSV theo video/bitrate và hình **ΔQP yêu cầu / QP thực
-  final CU**. Trace final CU giữ ba POC đầu/giữa/cuối mỗi clip Validation để
-  giới hạn dung lượng; trajectory/action giữ đủ frame. Không coi ΔQP khác 0
-  hoặc test kỹ thuật PASS là hiệu quả detection
+**State:** 25 global features và 5 maps CTU32 kích thước 10×15: source energy, intra complexity, temporal propagation, native-QPA QP và semantic importance từ YOLO trên **frame nguồn trước encode**. Thêm legal-action mask 25 phần tử. Chi phí chạy YOLO trên nguồn là **chi phí encoder thực** phải báo cáo; không coi đây là semantic feature miễn phí khi triển khai.
 
-Phiên đầu: `AGENT_PROFILE='qpdev1'`, `PHASE='trial'`, `MODE='new'`;
-20.480 tương tác, Train16/Val4, 256 frame, Val50/120/200, collector T4×2,
-PPO CPU, tối đa 11h45 gồm setup. Không chạy Test30 khi chọn cấu hình
+**Action:** `Discrete(25)`, mỗi action là cặp `(ΔQP_ROI, ΔQP_BG)` thuộc `{-2,-1,0,+1,+2}²`. Action 12 = `(0,0)` giữ QPA. Action map nguyên CTU32 được chuyển trực tiếp sang 20×30 và gửi qua `NativeEpisode` của VVenC. **Không dùng ánh xạ 36 PPO bins.** Mask loại action tạo QP map trùng nhau; fixed-policy probe dùng action hợp lệ tương đương.
 
-Đối chứng cùng ngân sách: phiên riêng `AGENT_PROFILE='paper'`, `MODE='new'`.
-`qpdev-reward` thay reward+aux, `qpdev-state` thêm state+extractor; đây là
-so sánh theo giai đoạn, không cô lập từng thay đổi như ablation đầy đủ.
-Giữ mốc trước phát triển ở commit `6ea5c054d8435376bf086a620d99b21345c391a7`
+**Reward/objective (giả thuyết khởi tạo, chưa tối ưu):**
 
-Screening đã định trước: best đã train tốt hơn initial và anchor về objective;
-clip F1 macro tăng ít nhất 0,2 điểm %, bitrate macro tăng không quá 1%,
-p95 tăng không quá 5%, và >1% ô có |ΔQP yêu cầu| ≥0,5. Đây là ngưỡng
-thử nghiệm để quyết định chạy tiếp, chưa chứng minh mAP/BD-rate hoặc ý nghĩa
-thống kê. Cần kiểm tra nhiều seed và Test chưa dùng để tinh chỉnh
+    J = mean(frame_F1) - 0.15 * (actual_bits/target_bits)
+        - 3.0 * max(0, actual_bits/target_bits - 1.02)
 
-**Không resume checkpoint trước phát triển vào QPDev.** Muốn tiếp tục một run
-giữ nguyên profile/phase/source/config, đặt MODE=resume và thêm SAFE đúng run.
-SAFE chứa checkpoint, metrics, validations, reports và bằng chứng trajectory.
-Các hướng dẫn adapter/3 dưới đây mô tả đối chứng lịch sử; QPDev dùng mục tiêu,
-state và action đã nêu ở mục này
+Reward từng picture có tổng đúng bằng objective cuối clip khi `gamma=1`; kiểm tra trong environment. Đây là **soft bitrate penalty**, không phải hard constraint. `frame_F1` là **YOLO pseudo-label retention** (nguồn vs tái tạo), không phải mAP dựa annotation BDD100K.
 
-- Điều khiển bản đồ ΔQP bằng PPO; chưa triển khai phát triển Partition/MTS
-- Đã sửa lỗi cộng lặp ΔQP ở inter QG, hợp đồng `native-qpa-single-delta/2`.
-  QG con dùng QP nền QPA riêng; mỗi QG chỉ cộng một lần ΔQP của vùng đó
-- **Bắt đầu run mới bằng `MODE='new'`**. Không nạp checkpoint trước bản sửa QG
-- Kiểm tra local: 66 test, 65 đạt, 1 RGB test bỏ qua vì thiếu shared library
-  trên Windows. Test kỹ thuật không chứng minh chất lượng học hoặc BD-rate;
-  preflight Kaggle vẫn bắt buộc trước training
-- Source nhập từ snapshot `af01dd3ac10a68ff8a4bc963d2e321378706edd8`.
-  Notebook đã chuyển sang repo này và ghim commit để tái lập
+**D3QN:** dueling value/advantage network, Double-Q target, experience replay, Huber loss, target synchronization, epsilon-greedy, gradient clipping và masking cho cả chọn action lẫn bootstrap. **Tập 25 action và hệ số reward chưa phải thiết kế tối ưu đã được thực nghiệm xác nhận.**
 
-## So sánh thực nghiệm
+## 4. Các file D3QN (không phải source PPO đổi tên)
 
-Runner hiện đánh giá **VVC** (anchor CTU32) và **VVC_RL**. H264_RL chưa tích hợp
-vào runner này. Ưu tiên xin checkpoint của bản tái hiện bên thứ ba để đánh giá
-H264_RL; hiện chưa có file checkpoint tải được. Không gọi bản tái hiện là model
-chính thức của tác giả paper
+| File | Vai trò |
+|---|---|
+| [`d3qn_method.py`](scripts/rl_rc_dot/d3qn_method.py) | State/action/reward + semantic ROI + mask |
+| [`d3qn_agent_v2.py`](scripts/rl_rc_dot/d3qn_agent_v2.py) | Mạng Dueling Double DQN, replay, optimizer, checkpoint |
+| [`d3qn_native_env.py`](scripts/rl_rc_dot/d3qn_native_env.py) | Native environment, **không dùng** `VVenCEnv` PPO |
+| [`d3qn_native_runner.py`](scripts/rl_rc_dot/d3qn_native_runner.py) | Probe + pilot train, Mini16/Val4 |
+| [`test_d3qn_native_v2.py`](scripts/rl_rc_dot/test_d3qn_native_v2.py) | Unit test cho MDP, masking và Double-Q |
+| [`D3QN_NATIVE_MDP_DESIGN.md`](scripts/rl_rc_dot/D3QN_NATIVE_MDP_DESIGN.md) | Đặc tả kỹ thuật và giao thức đánh giá |
 
-Các hệ thống phải dùng cùng video Test, đoạn frame, kích thước, detector,
-metric và bitrate thực. Công bố dữ liệu/ngân sách training của từng agent và
-kiểm tra không trùng Train/Test. Anchor là **CTU32/DQP2/FPP0**, không dùng các
-kết quả stock CTU128 cũ làm đối chứng cùng cấu hình
+Hạ tầng dùng chung với hệ thống PPO trước đó chỉ để giữ tính nhất quán codec/benchmark: `data.py` (dataset), `codec.py` (NativeEpisode), `method.detection_assignments`, `action_audit.py`, `evaluate.verify_decoded`, VVenC C++. **PPO agent, PPO rollout, PPO action mapping và PPO reward không được sử dụng để train D3QN.**
 
-## Dataset và input
+## 5. Chạy trên Kaggle
 
-- Full lock: Train65 / Validation7 / Test100
-- Mini: **Train16 / Validation4 / Test30**, tập con xác định theo seed, phân
-  tầng theo số car boxes; ba tập không trùng nhau. Đây không phải phân tầng
-  đã xác minh theo ngày/đêm/thời tiết
-- Lock và cấu hình detector đã nằm trong source. Dataset lock SHA256:
-  `f7a600f501de622f66ace04bb0b12ec5da0dab988cd54732d614f6b16495aaea`
-- Cần input **MOV BDD100K Train00 / Driving Video with Object Tracking**
-  chứa các video được chọn. `bdd100k.zip` và `snapshot.zip` cũ chứa metadata,
-  không thay thế MOV. Notebook kiểm tra hash MOV trước khi build codec
-- Bật Internet và **GPU T4×2**. Setup giữ CUDA Torch đang có, pin source
-  VVdeC/YOLO và kiểm tra weights; không so binary Kaggle với SHA Windows cũ
+Checkout đúng nhánh D3QN và chuẩn bị VVenC đã sửa native action bridge, VVdeC, YOLOv5, pinned weights, FFmpeg và dataset đã mount. Các đường dẫn `/path/to/...` là placeholder, **phải thay bằng đường dẫn thực**.
 
-Train Mini chọn ngẫu nhiên đoạn 256 frame bắt đầu tại 0/128/256/384/512.
-Validation/Test dùng đoạn đầu theo độ dài cấu hình. Cần ghi rõ giới hạn này
-khi báo cáo, không gọi là đánh giá nguyên video.
+### A. Unit test + native preflight
 
-## Chọn notebook
+    python -m unittest scripts.rl_rc_dot.test_d3qn_native_v2 -v
+    python -m scripts.rl_rc_dot.preflight --encoder /path/to/repaired/vvencapp --decoder /path/to/vvdecapp --output /kaggle/working/d3qn_native_preflight --frames 32
 
-| Bước | Notebook | Ngân sách mặc định |
-|---|---|---|
-| Kiểm tra kỹ thuật | [Mini Pilot](notebooks/RL_RC_DoT_VVC_Mini_Pilot_Kaggle.ipynb) | 256 tương tác; Val2 × 2 rate × 64 frame |
-| Kiểm tra khả năng học | [Mini Trial](notebooks/RL_RC_DoT_VVC_Mini_Trial20480_Kaggle.ipynb) | 20.480 tương tác; Val4 × 2 rate × 256 frame |
-| Đánh giá sau khi chốt checkpoint | [Mini Test30](notebooks/RL_RC_DoT_VVC_Mini_Test30_Kaggle.ipynb) | 30 video × 5 rate × 256 frame; 15 cặp bổ sung/phiên |
+**Chưa có kết quả PASS thực tế cho nhánh D3QN**. Phải kiểm tra native QG/lambda, bitstream, VVdeC parity trước training dài.
 
-Pilot/Trial training dùng hai collector: YOLO trên GPU0/GPU1; PPO mặc định CPU;
-VVenC là CPU encoder. Test30 hiện dùng **GPU0 tuần tự**, chưa song song hai GPU.
+### B. Fixed-action probe (chạy trước training)
 
-Phiên đầu dùng `MODE='new'`. Pilot, Trial và `PHASE='full'` trong notebook Mini
-có hợp đồng rollout/validation khác nhau: không đổi phase rồi resume checkpoint
-của phase cũ. **`PHASE='full'` trong Mini chỉ là Mini chạy dài hơn, vẫn 16/4/30**;
-không tự chuyển sang Train65. Muốn mở rộng Full65 phải tạo thí nghiệm riêng.
+    python -m scripts.rl_rc_dot.d3qn_native_runner \
+      --phase probe \
+      --input-root /kaggle/input/datasets/robikscube/driving-video-with-object-tracking \
+      --encoder /path/to/repaired/vvencapp --decoder /path/to/vvdecapp \
+      --yolo-repo /path/to/pinned/yolov5 --weights /path/to/pinned/yolov5n.pt \
+      --output /kaggle/working/d3qn_v2_probe_001 --device cuda:0 \
+      --val-videos 4 --val-rates 50,120,200
 
-Mỗi notebook khóa một source commit. Không sửa pin/hyperparameter giữa các
-phiên resume. Lưu notebook và log setup của phiên đã chạy để tái lập kết quả.
+Runner probe dùng 6 chính sách cố định, nên cấu hình đầy đủ = **4 video × 3 rate × 6 policy = 72 lượt encode**, mỗi lượt 256 frame. Kiểm tra nhanh có thể thêm `--val-videos 1 --val-rates 120` (chỉ smoke test, không phải Validation đầy đủ). Không kết luận cải thiện từ **cùng target bitrate**; phải khớp **bitrate thực**.
 
-## Training và cách đánh giá trong phiên
+### C. D3QN pilot train (chỉ sau khi probe đạt)
 
-Entry point: `python -m scripts.rl_rc_dot.session`. `train.py` không có
-`--trajectory` chuyển sang runner này; pilot DOT_PROXY cũ đã ngừng hỗ trợ.
+    python -m scripts.rl_rc_dot.d3qn_native_runner \
+      --phase train \
+      --input-root /kaggle/input/datasets/robikscube/driving-video-with-object-tracking \
+      --encoder /path/to/repaired/vvencapp --decoder /path/to/vvdecapp \
+      --yolo-repo /path/to/pinned/yolov5 --weights /path/to/pinned/yolov5n.pt \
+      --output /kaggle/working/d3qn_v2_train_001 --device cuda:0 \
+      --train-steps 5120 --val-videos 4 --val-rates 50,120,200
 
-Training dùng YOLOv5n để so detection trên frame tái tạo với frame gốc làm
-pseudo-ground-truth. Reward gốc: `20*Precision - abs(log(prefix_rate/target))`.
-PPO nhận 0,05 lần reward; validation/report giữ đơn vị gốc. Mỗi bước là một
-picture trong coding order, không phải một video. Không quy về 975 episode
-hoặc 3 epoch dataset; `PPO_EPOCHS=3` là lượt tối ưu trên mỗi rollout.
+Pilot 5.120 frame transitions tương ứng 20 episode 256-frame nếu chạy hết. Validation của pha train = **4×3×7 = 84 lượt encode** (sáu đối chứng + D3QN). Đây là một pilot, **chưa phải huấn luyện đầy đủ hoặc chứng minh hội tụ**.
 
-Validation định kỳ so **anchor / zero-action / learned policy**, lưu Precision,
-Recall, F1, PSNR, bitrate thực và reward. Chọn best bằng macro mean reward
-validation hoàn chỉnh. `latest` phục vụ tiếp tục training; nó có thể kém `best`.
-Không dùng Test30/Test100 để chỉnh reward hoặc chọn hyperparameter.
+## 6. Output, kiểm chứng và giới hạn
 
-Qua Pilot không đồng nghĩa có hiệu quả học. Trước khi chạy dài, xem KL/clip
-fraction, action spread, auxiliary diagnostics, explained variance và xu hướng
-validation so với bitrate thực. Không suy chất lượng học chỉ từ test PASS.
+- `contract.json`: dataset/source/codec/weights hashes và tham số run.
+- `train_metrics.json`, `train_summary.json`, `checkpoint.pt`: chỉ khi `--phase train`.
+- `validation.json` và `validation_partial.json`: mỗi video/rate/policy, measured kbps, mean frame F1, objective, VVdeC parity.
+- `trajectory.jsonl.gz`, native logs và action audit: AU bits từng POC, lựa chọn QP, reconstruction hash, QG/lambda (Validation).
 
-## Resume và lưu bằng chứng
+**Chưa có:** native test PASS trong môi trường Kaggle, training/resume/best-checkpoint selection, multi-seed, Test30, ground-truth mAP hoặc BD-rate. Để xác định thuật toán D3QN vượt PPO, phải làm ablation với **cùng state/action/reward v2**; các kết quả PPO cũ chỉ là baseline lịch sử.
 
-Upload gói **`*_KAGGLE_SAFE.zip`** của đúng run; `session_payload.bin` giữ nguyên
-ZIP bên trong khi Kaggle giải nén Input. Giữ mọi export cũ để đối chiếu.
+## 7. Lưu trữ tài liệu PPO
 
-- Adapter/2, V3/V4 và DOT_PROXY **không tương thích adapter/3**; không bỏ assert
-  để nạp chúng. Với adapter/3 bắt đầu run mới
-- Resume giữ source/profile/dataset/seed/workers/rollout/validation/PPO settings;
-  được đổi ngân sách bổ sung. Source/config khác sẽ bị từ chối
-- Phục hồi model, optimizer, counters và RNG, rồi mở codec episode/rollout mới;
-  không phục hồi giữa một picture/reference buffer đang encode
-- Dừng mềm dành thời gian export; VM bị tắt đột ngột chỉ giữ checkpoint đã
-  commit còn trên đĩa. Không có bảo đảm ZIP kịp tạo khi VM bị kill
-- Validation control cache không nằm trong export hiện tại; sau resume control
-  có thể được tính lại. Đây là chi phí bổ sung, không phải policy bị mất
+README phương pháp **PPO** trước đây: [nhánh main](https://github.com/youngan2810/RL-VVC/blob/main/README.md). [`METHOD_MAPPING.md`](scripts/rl_rc_dot/METHOD_MAPPING.md), `session.py`, `qp_development.py` và notebook PPO là tài liệu/triển khai **cũ**, không phải entry point cho D3QN v2.
 
-Output chính: `method.json`, `session.json`, `dataset_selection.json`,
-`progress.json`, `checkpoints/`, `metrics/`, `validations/`, native/trajectory
-evidence và SAFE export. SHA/ràng buộc method được kiểm tra trước khi load.
-
-## Test30 và chỉ số báo cáo
-
-Mặc định `TEST_RATES='50,80,120,160,200'`: **150 cặp**. Có thể chọn
-`'50,120,200'` để khảo sát nhanh **90 cặp**, không báo BD-rate. Không đổi rates
-hay checkpoint khi resume. Độ dài Mini Test cố định 256 frame/video.
-
-Report hiện có: Precision, Recall, F1, PSNR, bitrate thực, paired deltas,
-đường RD, BD-Precision và BD-rate nếu đủ năm điểm hợp lệ có miền giao nhau.
-Không ngoại suy khi hai đường không giao miền; kết quả không xác định để null.
-Không gọi BD-Precision là mAP. Chưa có segmentation/tracking/mAP trong runner.
-Các chỉ số detection ở đây là mức bảo toàn pseudo-label, không phải đánh giá
-trực tiếp so annotation thật của BDD100K.
-
-Thời gian setup tính trong session budget khi dùng notebook mới. Chọn resume
-Input theo đúng checkpoint, source, seed, frame và rate. Test30 hiện tại chỉ đánh giá VVC và VVC_RL; chưa gồm H264_RL.
-
-## Lệnh kiểm tra kỹ thuật
-
-```bash
-python -m unittest discover -s scripts/rl_rc_dot -p 'test_*.py' -v
-python -m scripts.rl_rc_dot.preflight --encoder /path/vvencapp \
-  --decoder /path/vvdecapp --output /path/new_preflight --frames 32
-```
-
-Linux/Kaggle runner còn bắt buộc kiểm tra RGB conversion byte-exact với
-FFmpeg. Native preflight kiểm tra state, action, CU coverage, AU bits, POC và
-decoder parity. Bảng bằng chứng và giới hạn nằm trong
-[đặc tả kỹ thuật](scripts/rl_rc_dot/METHOD_MAPPING.md#verification-and-experiment-history).
-
-## Tài liệu và giấy phép
-
-- [Paper RL-RC-DoT](https://arxiv.org/abs/2501.12216)
-- [Bản tái hiện độc lập H.264](https://github.com/Puiching-Memory/RL-RC-DoT)
-- [Tài liệu build và sử dụng VVenC gốc](https://github.com/fraunhoferhhi/vvenc)
-- Giữ nguyên LICENSE, COPYRIGHT, AUTHORS và giấy phép thư viện trong `thirdparty/`
-
-Các README của những giai đoạn thử nghiệm cũ đã được gộp hoặc bỏ. Các comment
-còn nhắc `README_RL_RC_DOT.md` trỏ tới hướng dẫn đã gộp vào file này. Notebook
-ngoài luồng Mini là tài liệu lưu trữ, không phải luồng chạy khuyến nghị
+Giữ nguyên LICENSE/COPYRIGHT/AUTHORS và giấy phép thư viện bên thứ ba.
