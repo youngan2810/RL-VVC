@@ -35,7 +35,7 @@ class D3QNNativeEnv:
         self.rate,self.video=rate,video
         self.random_windows=bool(random_windows)
         self.retain_media=bool(retain_media)
-        if self.random_windows and (split!='train' or frames!=256 or video is not None):
+        if self.random_windows and (split!='train' or frames!=256):
             raise ValueError('Random-window training only for mini train 256')
         self.native=None;self.source=None;self.trace=None;self.action_audit=None
         self.audit_enabled=(split=='val')
