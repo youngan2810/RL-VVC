@@ -199,7 +199,7 @@ def main():
                             break
                         train.video=balanced_train_video(catalog.selected['train'],args.seed,agent.steps//256)
                         obs,meta=train.reset(seed=next_seed)
-                        total_reward=0.;last_update=None
+                        total_reward=0.;last_update=None;episode_updates=[]
                         while True:
                             i=completed_this_run
                             epsilon=max(.05,1.-.95*min(1.,agent.steps/5120.))
@@ -207,7 +207,10 @@ def main():
                             nxt,reward,done,truncated,info=train.step(action)
                             if truncated:raise RuntimeError('Truncated native episode')
                             counts[action]+=1
-                            last_update=agent.observe(obs,action,reward,nxt,done) or last_update
+                            update=agent.observe(obs,action,reward,nxt,done)
+                            if update is not None:
+                                last_update=update
+                                episode_updates.append(update)
                             total_reward+=reward
                             completed_this_run+=1
                             if completed_this_run%32==0:
@@ -217,13 +220,18 @@ def main():
                             obs=nxt
                         next_seed=int(agent.rng.integers(1,2**31))
                         agent.save(checkpoint,identity=identity,next_episode_seed=next_seed)
+                        averaged={k:float(np.mean([v[k] for v in episode_updates]))
+                                  for k in ('loss','mean_abs_td','grad_norm','q_gap_valid',
+                                            'q_max_valid','unique_greedy_actions_in_batch')}
                         row={'total_steps':agent.steps,'additional_steps':completed_this_run,
                              'episode':info['episode'],'episode_reward':total_reward,
                              'epsilon':epsilon,'train_video':meta['video_id'],
                              'train_rate':meta['rate_kbps'],
                              'training_video_index':(agent.steps//256-1)%16,
                              'training_epoch':(agent.steps//256-1)//16,
-                             'last_update':last_update}
+                             'last_update':last_update,
+                             'mean_update':averaged,
+                             'num_optimizer_updates_in_episode':len(episode_updates)}
                         logs.append(row)
                         atomic_json(args.output/'train_progress.json',
                                     {'status':'checkpointed','total_steps':agent.steps,
