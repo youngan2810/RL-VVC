@@ -22,6 +22,7 @@ from .d3qn_method import NEUTRAL_ACTION, N_ACTIONS, qp_action_map
 from .evaluate import verify_decoded
 
 PROTOCOL = 'native-masked-d3qn-qp/v2'
+DATASET_SPLIT_SEED = 20261111  # Fixed across ALL agent seeds; same Mini16/Val4 as PPO.
 FIXED_CONTROLS = (
     ('qpa_anchor',NEUTRAL_ACTION),
     ('global_minus1',6),                # (-1,-1)
@@ -147,9 +148,10 @@ def main():
     args.output.mkdir(parents=True)
     session_start=args.session_start_utc if args.session_start_utc>0 else time.time()
     deadline=(session_start+args.max_hours*3600-900) if args.max_hours else float('inf')
-    catalog=VideoCatalog(args.input_root,args.ffmpeg,args.ffprobe,mode='mini',seed=args.seed)
+    catalog=VideoCatalog(args.input_root,args.ffmpeg,args.ffprobe,mode='mini',seed=DATASET_SPLIT_SEED)
     catalog.check_available(('train','val'))
     identity={'protocol':PROTOCOL,'seed':args.seed,'data_mode':'mini',
+              'dataset_split_seed':DATASET_SPLIT_SEED,
               'dataset_sha256':digest(ASSETS/'dataset_lock.json'),
               'source_fingerprint':source_fingerprint(),
               'encoder_sha256':digest(args.encoder),
