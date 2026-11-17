@@ -26,7 +26,9 @@ TRAIN_RATES=(50,80,120,160,200)
 DATASET_SPLIT_SEED = 20261111  # Fixed across ALL agent seeds; same Mini16/Val4 as PPO.
 FIXED_CONTROLS = (
     ('qpa_anchor',NEUTRAL_ACTION),
-    ('global_minus2',0),                # (-2,-2), prior strongest simple PPO-era heuristic
+    ('global_minus2',0),                # (-2,-2), prior strongest simple heuristic
+    ('roi_minus2_bg_zero',2),          # (-2,0), protects objects
+    ('roi_plus1_bg_plus2',19),         # (+1,+2), learned V2 action19
     ('global_minus1',6),                # (-1,-1)
     ('global_plus1',18),                # (+1,+1)
     ('roi_minus1_bg_plus1',8),          # (-1,+1)
@@ -45,6 +47,11 @@ def parser():
     p.add_argument('--ffprobe',default='ffprobe')
     p.add_argument('--device',default='cuda:0')
     p.add_argument('--seed',type=int,default=20261111)
+    p.add_argument('--n-step',type=int,default=3)
+    p.add_argument('--target-tau',type=float,default=0.005)
+    p.add_argument('--learning-rate',type=float,default=5e-5)
+    p.add_argument('--epsilon-floor',type=float,default=0.20)
+    p.add_argument('--epsilon-decay-steps',type=int,default=10240)
     p.add_argument('--train-steps',type=int,default=5120,
                    help='Additional 256-frame transitions THIS run; checkpoint remains resumable')
     p.add_argument('--encoder-threads',type=int,default=2)
@@ -53,7 +60,7 @@ def parser():
                    help='Start index in locked Mini Val4 (for chunked Kaggle validation)')
     p.add_argument('--val-rates',default='50,120,200')
     p.add_argument('--val-methods',default='all',
-                   help='Comma-separated subset of qpa_anchor, global_minus2, global_minus1, global_plus1, '
+                   help='Subset of qpa_anchor, global_minus2, roi_minus2_bg_zero, roi_plus1_bg_plus2, global_minus1, global_plus1, '
                         'roi_minus1_bg_plus1, roi_minus2_bg_plus2, roi_zero_bg_plus2, trained_d3qn')
     p.add_argument('--max-hours',type=float,default=0.,
                    help='Optional wall clock budget including Kaggle setup')
@@ -147,6 +154,9 @@ def main():
     if (args.train_steps<256 or args.train_steps%256 or not 1<=args.val_videos<=4
             or not 0<=args.val_start<=4 or args.val_start+args.val_videos>4
             or args.encoder_threads<1 or args.max_hours<0
+            or not 1<=args.n_step<=8 or not 0<args.target_tau<=1
+            or args.learning_rate<=0 or not 0<=args.epsilon_floor<=1
+            or args.epsilon_decay_steps<1
             or not rates or len(set(rates))!=len(rates) or any(not 50<=r<=200 for r in rates)):
         raise ValueError('Require 256-multiple train steps, <=4 Val videos, 50..200 kbps rates')
     if args.phase=='probe' and args.checkpoint_in is not None:
@@ -168,15 +178,19 @@ def main():
               'frames':256,'qp_offsets':[-2,-1,0,1,2],
               'reward':'d3qn_v2_0.15_3.0_0.02_unchanged',
               'state':'v3_previous_roi_background_offsets',
-              'learning':'v3_3step_gamma1_polyak005_lr5e-5'}
+              'learning':{'n_step':args.n_step,'target_tau':args.target_tau,
+                          'learning_rate':args.learning_rate,
+                          'epsilon_floor':args.epsilon_floor,
+                          'epsilon_decay_steps':args.epsilon_decay_steps,
+                          'gamma':1.0}}
     contract={**identity,'phase':args.phase,'additional_steps':args.train_steps,
               'val_videos':args.val_videos,'val_start':args.val_start,
               'val_rates':rates,'val_methods':args.val_methods,
               'source_detector_before_action':True,'decoder_sha256':digest(args.decoder),
               'clock_budget_hours':args.max_hours,
-              'epsilon_decay_steps':10240,'epsilon_floor':0.20,
+              'epsilon_decay_steps':args.epsilon_decay_steps,'epsilon_floor':args.epsilon_floor,
               'train_rates_per_episode':list(TRAIN_RATES),
-              'n_step':3,'target_tau':0.005,'learning_rate':5e-5}
+              'n_step':args.n_step,'target_tau':args.target_tau,'learning_rate':args.learning_rate}
     atomic_json(args.output/'contract.json',contract)
     detector=FrozenDetector(args.yolo_repo,args.weights,args.device)
     status='not_started'
@@ -189,7 +203,9 @@ def main():
                 agent,next_seed=StableMaskedD3QN.load(args.checkpoint_in,identity=identity,device=args.device)
                 print('D3QN_RESUME_PASS',agent.steps,agent.updates,'replay',len(agent.replay),flush=True)
             else:
-                agent=StableMaskedD3QN(seed=args.seed,device=args.device)
+                agent=StableMaskedD3QN(seed=args.seed,device=args.device,
+                                       n_step=args.n_step,target_tau=args.target_tau,
+                                       lr=args.learning_rate)
                 next_seed=args.seed
             if args.phase=='train':
                 train=D3QNNativeEnv(catalog,detector,args.encoder,args.output/'training',
@@ -209,7 +225,8 @@ def main():
                         obs,meta=train.reset(seed=next_seed)
                         total_reward=0.;last_update=None;episode_updates=[]
                         while True:
-                            epsilon=exploration_epsilon(agent.steps)
+                            epsilon=exploration_epsilon(agent.steps,floor=args.epsilon_floor,
+                                                        decay_steps=args.epsilon_decay_steps)
                             action=agent.predict(obs,epsilon=epsilon)
                             nxt,reward,done,truncated,info=train.step(action)
                             if truncated:raise RuntimeError('Truncated native episode')
