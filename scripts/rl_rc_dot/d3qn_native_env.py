@@ -20,7 +20,7 @@ from .d3qn_method import (NEUTRAL_ACTION, observation, qp_action_map,
 
 class D3QNNativeEnv:
     def __init__(self,catalog,detector,encoder,output,*,split='train',frames=256,
-                 rate=None,video=None,threads=2,mode='live',random_windows=False):
+                 rate=None,video=None,threads=2,mode='live',random_windows=False,retain_media=False):
         if split not in ('train','val','test') or mode not in ('anchor','live'):
             raise ValueError('Invalid split or native control mode')
         if frames<1 or threads<1:
@@ -34,6 +34,7 @@ class D3QNNativeEnv:
         self.frames,self.threads,self.mode=frames,threads,mode
         self.rate,self.video=rate,video
         self.random_windows=bool(random_windows)
+        self.retain_media=bool(retain_media)
         if self.random_windows and (split!='train' or frames!=256 or video is not None):
             raise ValueError('Random-window training only for mini train 256')
         self.native=None;self.source=None;self.trace=None
@@ -49,6 +50,8 @@ class D3QNNativeEnv:
         if self.source is not None:
             self.source._mmap.close()
             self.source=None
+        if not self.retain_media and hasattr(self,'folder'):
+            (self.folder/'source.yuv').unlink(missing_ok=True)
 
     def close(self):
         self._cleanup()
@@ -130,6 +133,9 @@ class D3QNNativeEnv:
              'reconstruction_sha256':hashlib.sha256(rec).hexdigest()}
         self.trace.write(json.dumps(row,allow_nan=False)+'\n')
         self.trace.flush()
+        if not self.retain_media:
+            (self.native.recon/f'{poc}.yuv').unlink(missing_ok=True)
+            (self.native.actions/f'{poc}.txt').unlink(missing_ok=True)
         self.prev_action=int(action);self.prev_au_bits=post['au_bits'];self.prev_f1=f1
         done=nxt is None
         info={'poc':poc,'frame_f1':f1,'au_bits':post['au_bits'],
