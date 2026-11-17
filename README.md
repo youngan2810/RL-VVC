@@ -29,6 +29,14 @@
 - [test_d3qn_native_v3.py](scripts/rl_rc_dot/test_d3qn_native_v3.py) —
   regression tests state/replay/Double Q/checkpoint.
 
+**Notebook Kaggle V3 đã push lên cùng repository:**
+[notebooks/VVC_D3QN_V3_Mini16_Val4_LearningCheck_Kaggle.ipynb](notebooks/VVC_D3QN_V3_Mini16_Val4_LearningCheck_Kaggle.ipynb).
+
+Notebook **ghim source commit `07a0eacb6793e368920ae0b89b9b51d06b5b56b2`**, dùng
+Train16/Val4, 5 milestone, checkpoint tốt nhất theo Val4, fixed QPA/-2/(+1,+2)/(-2,0),
+không chạy Test30. Đây là notebook V3 mới; notebook FIXED V2 trước đó
+không tự cập nhật và sẽ vẫn dùng mã V2.
+
 Lệnh entry point mới: `python -m scripts.rl_rc_dot.d3qn_native_runner_v3`.
 **Old V2 source/runner được giữ để tái lập**. Reward F1–bitrate
 vẫn giữ như V2 (gamma1); những thay đổi này là **giả thuyết kỹ thuật cần
