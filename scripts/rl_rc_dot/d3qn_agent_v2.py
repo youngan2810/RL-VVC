@@ -120,7 +120,8 @@ class MaskedD3QN:
         self.online.eval()
         with torch.no_grad():
             q=self.online({'global':torch.as_tensor(glob[None],device=self.device),
-                           'maps':torch.as_tensor(maps[None].astype(np.float32),device=self.device)})[0]
+                           'maps':torch.as_tensor(maps[None].astype(np.float32),device=self.device),
+                           'legal':torch.as_tensor(legal[None],device=self.device)})[0]
             q=q.masked_fill(~torch.as_tensor(legal,device=self.device),float('-inf'))
         return int(q.argmax().item())
 
