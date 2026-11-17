@@ -14,7 +14,7 @@ import numpy as np
 from .data import VideoCatalog,FrozenDetector,atomic_json,digest,ASSETS,source_fingerprint
 from .d3qn_native_env import D3QNNativeEnv
 from .d3qn_agent_v2 import MaskedD3QN
-from .d3qn_method import NEUTRAL_ACTION, N_ACTIONS
+from .d3qn_method import NEUTRAL_ACTION, N_ACTIONS, qp_action_map
 from .evaluate import verify_decoded
 
 
@@ -30,9 +30,27 @@ def parser():
     p.add_argument('--train-steps',type=int,default=5120)
     p.add_argument('--frames',type=int,default=256)
     p.add_argument('--encoder-threads',type=int,default=2)
-    p.add_argument('--val-videos',type=int,default=1)
-    p.add_argument('--val-rates',default='120')
+    p.add_argument('--val-videos',type=int,default=4)
+    p.add_argument('--val-rates',default='50,120,200')
     return p
+
+
+def canonical_fixed_action(action, obs):
+    """Map a fixed policy to its legal equivalent when ROI is empty/full.
+
+    Action masking removes duplicate QP maps, not the physical fixed policy.
+    Without canonicalization a fixed ROI strategy would crash on no-car POCs.
+    """
+    if not isinstance(action,(int,np.integer)) or not 0<=int(action)<N_ACTIONS:
+        raise ValueError('Invalid fixed action')
+    if obs['legal'][action]:
+        return int(action)
+    wanted=qp_action_map(action,obs['maps'][4])
+    alternatives=[int(a) for a in np.flatnonzero(obs['legal'])
+                  if np.array_equal(qp_action_map(int(a),obs['maps'][4]),wanted)]
+    if len(alternatives)!=1:
+        raise ValueError('Masked fixed control has no unique legal QP-map equivalent')
+    return alternatives[0]
 
 
 def episode(env,act,seed):
@@ -57,6 +75,8 @@ def main():
         raise FileExistsError('New unique output folder required for each experiment')
     args.output.mkdir(parents=True)
     catalog=VideoCatalog(args.input_root,args.ffmpeg,args.ffprobe,mode='mini',seed=args.seed)
+    if args.val_videos>len(catalog.selected['val']):
+        raise ValueError('Requested more validation videos than Mini Val4 contains')
     catalog.check_available(('train','val'))
     contract={
         'schema':'independent-native-masked-d3qn-qp/v1',
@@ -123,7 +143,7 @@ def main():
                     case=env_for('val',args.output/'validation'/video/name,
                                  video=video,rate=rate,
                                  mode='anchor' if name=='qpa_anchor' else 'live')
-                    selector=(lambda _obs,constant=constant:constant) if constant is not None else (
+                    selector=(lambda obs,constant=constant:canonical_fixed_action(constant,obs)) if constant is not None else (
                         lambda obs:agent.predict(obs,epsilon=0.))
                     try:
                         meta,metrics,stream,trajectory=episode(case,selector,args.seed)
