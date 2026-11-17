@@ -11,7 +11,7 @@ from scripts.rl_rc_dot.d3qn_agent_v3 import StableMaskedD3QN, exploration_epsilo
 from scripts.rl_rc_dot.d3qn_native_env import D3QNNativeEnv
 from scripts.rl_rc_dot.d3qn_native_env_v3 import D3QNNativeEnvV3
 from scripts.rl_rc_dot.d3qn_method import NEUTRAL_ACTION, action_pair
-from scripts.rl_rc_dot.d3qn_native_runner_v3 import PROTOCOL,TRAIN_RATES
+from scripts.rl_rc_dot.d3qn_native_runner_v3 import PROTOCOL,TRAIN_RATES,parser
 
 
 def synthetic_obs(step):
@@ -35,6 +35,20 @@ class StableD3QNContracts(unittest.TestCase):
         self.assertAlmostEqual(exploration_epsilon(10240),0.2)
         self.assertAlmostEqual(exploration_epsilon(20000),0.2)
         with self.assertRaises(ValueError):exploration_epsilon(-1)
+
+    def test_runner_ablation_flags_and_no_test_entry_point(self):
+        args=parser().parse_args([
+            '--phase','train','--input-root','.','--encoder','./encoder',
+            '--decoder','./decoder','--yolo-repo','./yolo','--weights','./w',
+            '--output','./out','--n-step','1','--target-tau','0.01',
+            '--learning-rate','0.0001','--epsilon-decay-steps','5120'])
+        self.assertEqual(args.n_step,1)
+        self.assertAlmostEqual(args.target_tau,.01)
+        self.assertAlmostEqual(args.learning_rate,1e-4)
+        self.assertEqual(args.epsilon_decay_steps,5120)
+        self.assertEqual(args.val_videos,4)
+        self.assertEqual(args.val_rates,'50,120,200')
+        self.assertNotIn('test',parser()._option_string_actions['--phase'].choices)
 
     def test_three_step_returns_and_terminal_flush_are_exact(self):
         agent=StableMaskedD3QN(seed=7,device='cpu',n_step=3,
