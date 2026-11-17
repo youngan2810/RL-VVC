@@ -354,9 +354,11 @@ void outputPicture( const Picture& pic, const AccessUnitList& au )
     << ",\"mode_fractions\":[" << f.intra/f.area << ',' << f.inter/f.area << ',' << f.skip/f.area << ']'
     << ",\"prediction_syntax_bits\":" << f.motionBits << ",\"coefficient_syntax_bits\":" << f.transformBits;
   if( controlsQp() ) { s.events << ",\"consumed_action\":"; writeMap(s.events,s.actions.at(pic.poc)); }
-  s.events << "}\n" << std::flush;
+  // Publish the post event only after its audit evidence is visible to the
+  // external reader. Later pictures can still append partial trace rows.
   if( s.cuLog ) s.cuLog.flush();
   if( s.qgLog ) s.qgLog.flush();
+  s.events << "}\n" << std::flush;
   s.frames.erase(pic.poc); s.actions.erase(pic.poc); s.activeActions.erase(pic.poc);
 }
 

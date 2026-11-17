@@ -29,11 +29,18 @@ class ActionAudit:
         p=self.folder/name
         if not p.exists():raise ValueError('Required native action trace missing: '+str(p))
         with p.open('rb') as f:
-            f.seek(self.offsets.get(name,0))
-            for line in f:
-                if not line.endswith(b'\n'):raise ValueError('Incomplete native action trace')
-                yield json.loads(line)
-            self.offsets[name]=f.tell()
+            offset=self.offsets.get(name,0)
+            # The encoder can already be writing a later POC. Read a bounded
+            # snapshot and retain a partial final row for the next consume.
+            end=f.seek(0,2)
+            if end<offset:raise ValueError('Native action trace was truncated')
+            f.seek(offset)
+            while f.tell()<end:
+                start=f.tell();line=f.readline(end-start)
+                if not line.endswith(b'\n'):break
+                row=json.loads(line)  # Malformed complete rows remain errors.
+                self.offsets[name]=f.tell()
+                yield row
     def consume(self,post,action):
         cache={};rounded_hist=Counter();effective=Counter();aggregated=[];clipped=0;count=0
         def picture_rows(name):
