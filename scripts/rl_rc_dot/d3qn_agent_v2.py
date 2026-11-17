@@ -7,6 +7,7 @@ from __future__ import annotations
 from collections import deque
 import copy
 import math
+from pathlib import Path
 import numpy as np
 import torch
 from torch import nn
@@ -76,6 +77,42 @@ class ReplayBuffer:
         self.rows.append((pre,a,float(reward),post,bool(done)))
 
     def __len__(self):return len(self.rows)
+
+    def state_dict(self):
+        """Only tensors/primitives, compatible with torch.load(weights_only=True)."""
+        if not self.rows:
+            raise ValueError('Cannot snapshot an empty replay buffer')
+        rows=list(self.rows)
+        def stack_obs(which, part):
+            return torch.as_tensor(np.stack([row[which][part] for row in rows]).copy())
+        return {
+            'capacity':self.rows.maxlen,
+            'obs_global':stack_obs(0,0),'obs_maps':stack_obs(0,1),
+            'obs_legal':stack_obs(0,2),
+            'actions':torch.tensor([row[1] for row in rows],dtype=torch.int64),
+            'rewards':torch.tensor([row[2] for row in rows],dtype=torch.float32),
+            'next_global':stack_obs(3,0),'next_maps':stack_obs(3,1),
+            'next_legal':stack_obs(3,2),
+            'dones':torch.tensor([row[4] for row in rows],dtype=torch.bool),
+            'rng_state':self.rng.bit_generator.state}
+
+    def load_state_dict(self,data):
+        n=len(data['actions'])
+        if n<1 or n>data['capacity'] or data['capacity']!=self.rows.maxlen:
+            raise ValueError('Replay capacity/size mismatch')
+        self.rows.clear()
+        keys=('obs_global','obs_maps','obs_legal','rewards','next_global','next_maps','next_legal','dones')
+        if any(len(data[k])!=n for k in keys):
+            raise ValueError('Inconsistent replay field length')
+        for i in range(n):
+            old=(data['obs_global'][i].numpy().copy(),
+                 data['obs_maps'][i].numpy().copy(),
+                 data['obs_legal'][i].numpy().copy())
+            nxt=(data['next_global'][i].numpy().copy(),
+                 data['next_maps'][i].numpy().copy(),
+                 data['next_legal'][i].numpy().copy())
+            self.rows.append((old,int(data['actions'][i]),float(data['rewards'][i]),nxt,bool(data['dones'][i])))
+        self.rng.bit_generator.state=data['rng_state']
 
     def sample(self,batch_size,device):
         if not 1<=batch_size<=len(self.rows):
@@ -150,10 +187,59 @@ class MaskedD3QN:
         return {'loss':float(loss.detach()),'mean_abs_td':float((td-predicted).abs().mean().detach()),
                 'grad_norm':float(grad),'updates':self.updates}
 
-    def save(self,path):
-        torch.save({'algorithm':'masked-dueling-double-dqn','online':self.online.state_dict(),
-                    'target':self.target.state_dict(),'optimizer':self.optimizer.state_dict(),
-                    'steps':self.steps,'updates':self.updates,'gamma':self.gamma,
-                    'reward_scale':self.reward_scale,
-                    'rng_state':self.rng.bit_generator.state,
-                    'replay_rng_state':self.replay.rng.bit_generator.state},path)
+    def save(self,path,*,identity,next_episode_seed=None):
+        """Atomic full replay + optimizer + RNG snapshot at an episode boundary."""
+        if self.steps<1 or self.steps%256:
+            raise ValueError('Save only after complete 256-picture training episodes')
+        if next_episode_seed is None:
+            raise ValueError('A resumable episode seed must be recorded')
+        path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
+        payload={
+            'version':'d3qn-native-checkpoint/v2','algorithm':'masked-dueling-double-dqn',
+            'identity':identity,'next_episode_seed':int(next_episode_seed),
+            'online':self.online.state_dict(),'target':self.target.state_dict(),
+            'optimizer':self.optimizer.state_dict(),
+            'steps':self.steps,'updates':self.updates,
+            'config':{'gamma':self.gamma,'batch_size':self.batch_size,
+                      'warmup':self.warmup,'train_every':self.train_every,
+                      'target_sync_updates':self.target_sync_updates,
+                      'reward_scale':self.reward_scale,
+                      'lr':self.optimizer.param_groups[0]['lr'],
+                      'replay_capacity':self.replay.rows.maxlen},
+            'replay':self.replay.state_dict(),
+            'agent_rng_state':self.rng.bit_generator.state,
+            'torch_cpu_rng_state':torch.get_rng_state(),
+            'torch_cuda_rng_states':torch.cuda.get_rng_state_all() if torch.cuda.is_available() else []}
+        staging=path.with_suffix(path.suffix+'.tmp')
+        torch.save(payload,staging)
+        staging.replace(path)
+
+    @classmethod
+    def load(cls,path,*,identity,device='cpu'):
+        """Load trusted tensor/primitives checkpoint; reject changed experiment."""
+        data=torch.load(path,map_location='cpu',weights_only=True)
+        if data.get('version')!='d3qn-native-checkpoint/v2' or data.get('identity')!=identity:
+            raise ValueError('D3QN checkpoint identity/protocol mismatch; never use PPO checkpoint')
+        cfg=data['config']
+        agent=cls(device=device,gamma=cfg['gamma'],lr=cfg['lr'],
+                  batch_size=cfg['batch_size'],replay_capacity=cfg['replay_capacity'],
+                  warmup=cfg['warmup'],train_every=cfg['train_every'],
+                  target_sync_updates=cfg['target_sync_updates'],
+                  reward_scale=cfg['reward_scale'])
+        agent.online.load_state_dict(data['online'])
+        agent.target.load_state_dict(data['target'])
+        agent.target.eval()
+        agent.optimizer.load_state_dict(data['optimizer'])
+        # Optimizer state needs to live on the same device as its parameters.
+        for state in agent.optimizer.state.values():
+            for k,v in state.items():
+                if isinstance(v,torch.Tensor):
+                    state[k]=v.to(agent.device)
+        agent.steps=int(data['steps'])
+        agent.updates=int(data['updates'])
+        agent.replay.load_state_dict(data['replay'])
+        agent.rng.bit_generator.state=data['agent_rng_state']
+        torch.set_rng_state(data['torch_cpu_rng_state'])
+        if agent.device.type=='cuda' and data['torch_cuda_rng_states']:
+            torch.cuda.set_rng_state_all(data['torch_cuda_rng_states'])
+        return agent,int(data['next_episode_seed'])
