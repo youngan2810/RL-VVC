@@ -131,7 +131,7 @@ Notebook Kaggle pilot theo mốc được phát hành riêng dưới tên **`VVC
 - 4 video Val: đo **cùng 4 video** và **120 kbps target** ở các mốc
   1.024 / 2.048 / 3.072 / 4.096 / 5.120 transitions;
   không dùng Validation để cập nhật gradient.
-- Baseline Val4 gồm VVenC QPA và heuristic global ΔQP=-1, đo trước train.
+- Baseline Val4 gồm VVenC QPA và heuristic global ΔQP=-2, đo trước train.
 - Ở mỗi mốc, đánh giá **chính sách greedy (epsilon=0)** trên Val4,
   đối chiếu same-video F1, actual kbps và objective; các mốc này
   là **diagnostics**, không phải đánh giá Test.
@@ -142,7 +142,7 @@ Notebook Kaggle pilot theo mốc được phát hành riêng dưới tên **`VVC
   (50/120/200 kbps trên đúng Val4), multi-seed, so sánh PPO cùng MDP.
 - `d3qn_native_runner` hỗ trợ `--val-methods` để
   monitor chỉ `trained_d3qn`; dùng `--phase probe --val-methods
-  qpa_anchor,global_minus1` để tạo baseline một lần.
+  qpa_anchor,global_minus2` để tạo baseline một lần.
 
 **Cảnh báo:** Kết quả monitor ở cùng target rate **không phải** kết quả
 rate-matched/BD-rate. Các threshold chỉ được dùng để quyết định bước
