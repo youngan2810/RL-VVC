@@ -37,7 +37,8 @@ class D3QNNativeEnv:
         self.retain_media=bool(retain_media)
         if self.random_windows and (split!='train' or frames!=256 or video is not None):
             raise ValueError('Random-window training only for mini train 256')
-        self.native=None;self.source=None;self.trace=None
+        self.native=None;self.source=None;self.trace=None;self.action_audit=None
+        self.audit_enabled=(split=='val')
         self.np_random=np.random.default_rng(20261111)
 
     def _cleanup(self):
@@ -84,8 +85,13 @@ class D3QNNativeEnv:
         if produced!=self.frames:raise ValueError('Unexpected length after YUV preprocessing')
         self.source=np.memmap(source,mode='r',dtype=np.uint8,shape=(self.frames,FRAME_BYTES))
         self.trace=gzip.open(folder/'trajectory.jsonl.gz','wt',encoding='utf-8')
+        do_audit=self.audit_enabled and self.mode=='live'
         self.native=NativeEpisode(self.encoder,source,folder/'codec',self.frames,rate,mode=self.mode,threads=self.threads,
-                                  trace_cus=False,trace_qgs=False)
+                                  trace_cus=do_audit,trace_qgs=do_audit)
+        if do_audit:
+            from .action_audit import ActionAudit
+            self.action_audit=ActionAudit(self.native.output)
+        else:self.action_audit=None
         self.target_bps=rate*1000.
         self.completed=0;self.prev_action=NEUTRAL_ACTION;self.prev_au_bits=0;self.prev_f1=0.
         self.frame_f1=[];self.rewards=[];self.action_history=np.zeros(25,dtype=np.int64)
@@ -109,6 +115,7 @@ class D3QNNativeEnv:
         post,nxt=self.native.step(delta)
         if post['poc']!=poc or post['cumulative_bits']!=before+post['au_bits']:
             raise ValueError('Inconsistent native picture/bitstream outcome')
+        audit=self.action_audit.consume(post,delta) if self.action_audit else None
         rec=(self.native.recon/f'{poc}.yuv').read_bytes()
         if len(rec)!=FRAME_BYTES*2:
             raise ValueError('Invalid reconstruction size')
@@ -141,6 +148,9 @@ class D3QNNativeEnv:
         info={'poc':poc,'frame_f1':f1,'au_bits':post['au_bits'],
               'roi_ctu_fraction':row['roi_ctu_fraction'],'action':int(action),
               'delta_map':delta,'codec_post':post}
+        if audit is not None:
+            info['native_action_audit']=audit
+            row['native_action_audit']=audit
         if done:
             actual_bps=self.native.bits*30/self.frames
             objective=clip_objective(self.frame_f1,self.native.bits,
@@ -153,6 +163,8 @@ class D3QNNativeEnv:
                              'actions':self.action_history.tolist(),
                              'source_detector_seconds':self.source_det_seconds,
                              'decoded_detector_seconds':self.recon_det_seconds}
+            if self.action_audit:
+                info['episode']['native_action_audit']=self.action_audit.summary()
             (self.folder/'episode_summary.json').write_text(json.dumps(info['episode'],indent=2),encoding='utf-8')
             self.trace.close();self.trace=None
             neutral=np.zeros(25,dtype=bool);neutral[NEUTRAL_ACTION]=True
