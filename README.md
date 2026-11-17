@@ -24,10 +24,10 @@ Không mặc định D3QN tốt hơn PPO: muốn so sánh thuật toán, phải 
 
 - Mini được chọn và khóa từ cùng [`dataset_lock.json`](scripts/rl_rc_dot/assets/dataset_lock.json), **split seed cố định `20261111`** ngay cả khi đổi training seed để chạy nhiều lần; không chia lại hoặc đụng Test để chọn mô hình.
 - Các video `.mov` không có trong GitHub. Mount dữ liệu BDD100K tại Kaggle, chẳng hạn `/kaggle/input/datasets/robikscube/driving-video-with-object-tracking`.
-- `VideoCatalog` lấy dataset theo `mode='mini'`, kiểm tra Train16/Val4. Train lấy ngẫu nhiên video từ **pool 16 video, có hoàn lại**, và cửa sổ **256 frame** tại offset 0/128/256/384/512; 5.120 transitions không bảo đảm đã xem đủ 16 video.
+- `VideoCatalog` lấy dataset theo `mode='mini'`, kiểm tra Train16/Val4. **Lịch train D3QN mới chọn đủ cả 16 video đúng một lần trong 16 episode đầu** (thứ tự tráo ngẫu nhiên nhưng tái lập), sau đó mới lặp; cửa sổ **256 frame** trong từng video vẫn chọn tại offset 0/128/256/384/512. Trong pilot 5.120 transitions = 20 episode, bảo đảm phủ Train16 nếu hoàn tất đủ.
 - Validation mặc định **Val4 × 50/120/200 kbps = 12 video–rate points**, mỗi clip 256 frame đầu. Mỗi point còn chạy nhiều phương pháp đối chứng.
 - Tiền xử lý chung: 480×320, 30 fps, YUV420p. Native VVenC: QPA bật, CTU32, MaxCuDQPSubdiv=2, 10-bit nội bộ.
-- Full65/Val7 và Test30 hiện **chưa có runner riêng** trong nhánh D3QN.
+- Full65/Val7 và Test30 **không được phép sử dụng** trong native learning-check environment của nhánh này; chỉ Train16/Val4.
 
 ## 3. State – Action – Reward riêng cho D3QN
 
@@ -121,3 +121,30 @@ Validation = **4×3×7 = 84 lượt encode**, gồm sáu đối chứng + D3QN, 
 README phương pháp **PPO** trước đây: [nhánh main](https://github.com/youngan2810/RL-VVC/blob/main/README.md). [`METHOD_MAPPING.md`](scripts/rl_rc_dot/METHOD_MAPPING.md), `session.py`, `qp_development.py` và notebook PPO là tài liệu/triển khai **cũ**, không phải entry point cho D3QN v2.
 
 Giữ nguyên LICENSE/COPYRIGHT/AUTHORS và giấy phép thư viện bên thứ ba.
+
+
+## 8. Learning-check: theo dõi agent có học đúng kỳ vọng không
+
+Notebook pilot theo mốc: [VVC_D3QN_Mini16_Val4_LearningCheck_Kaggle.ipynb](notebooks/VVC_D3QN_Mini16_Val4_LearningCheck_Kaggle.ipynb)
+(sẽ được thêm sau khi hoàn thiện notebook). **Không dùng Test30**.
+
+- 16 video Train: 16 episode đầu phủ đủ 16 ID; 20 episode = 5.120 transitions.
+- 4 video Val: đo **cùng 4 video** và **120 kbps target** ở các mốc
+  1.024 / 2.048 / 3.072 / 4.096 / 5.120 transitions;
+  không dùng Validation để cập nhật gradient.
+- Baseline Val4 gồm VVenC QPA và heuristic global ΔQP=-1, đo trước train.
+- Ở mỗi mốc, đánh giá **chính sách greedy (epsilon=0)** trên Val4,
+  đối chiếu same-video F1, actual kbps và objective; các mốc này
+  là **diagnostics**, không phải đánh giá Test.
+- Theo dõi mean TD loss, gradient norm, valid-action Q-gap,
+  số action greedy khác nhau, train vs Val F1/bitrate/objective;
+  kiểm tra collapse hoặc chỉ tăng F1 nhờ tăng bitrate.
+- Chỉ khi learning-check cho tín hiệu hợp lý mới xem xét đa bitrate
+  (50/120/200 kbps trên đúng Val4), multi-seed, so sánh PPO cùng MDP.
+- `d3qn_native_runner` hỗ trợ `--val-methods` để
+  monitor chỉ `trained_d3qn`; dùng `--phase probe --val-methods
+  qpa_anchor,global_minus1` để tạo baseline một lần.
+
+**Cảnh báo:** Kết quả monitor ở cùng target rate **không phải** kết quả
+rate-matched/BD-rate. Các threshold chỉ được dùng để quyết định bước
+thử nghiệm tiếp theo, không dùng Test30 để tuning.
