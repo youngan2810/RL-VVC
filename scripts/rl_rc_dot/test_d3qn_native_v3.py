@@ -77,6 +77,24 @@ class StableD3QNContracts(unittest.TestCase):
             self.assertAlmostEqual(float(obs['global'][5]),roi/2.)
             self.assertAlmostEqual(float(obs['global'][19]),bg/2.)
 
+    def test_roi_policy_diagnostics_are_separated(self):
+        with tempfile.TemporaryDirectory() as td:
+            env=object.__new__(D3QNNativeEnvV3)
+            env.folder=Path(td)
+            env.importance=np.zeros((10,15),dtype=np.float32)
+            env.completed=1
+            with patch.object(D3QNNativeEnv,'reset',
+                              return_value=(synthetic_obs(0),{})):
+                env.reset(seed=7)
+            with patch.object(D3QNNativeEnv,'step',
+                              return_value=(synthetic_obs(1),0.1,True,False,{'episode':{}})):
+                result=env.step(NEUTRAL_ACTION)
+            stats=result[-1]['episode']['roi_policy_diagnostics']
+            self.assertEqual(stats['roi_present_frames'],0)
+            self.assertEqual(stats['roi_absent_frames'],1)
+            self.assertEqual(stats['no_roi_action_histogram'][NEUTRAL_ACTION],1)
+            self.assertTrue((env.folder/'episode_summary.json').exists())
+
     def test_training_gradients_polyak_and_checkpoint_resume(self):
         model=StableMaskedD3QN(seed=23,n_step=3,lr=5e-5,
                                batch_size=4,warmup=4,train_every=1)
