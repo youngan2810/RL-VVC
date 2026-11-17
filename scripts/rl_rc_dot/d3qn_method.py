@@ -60,9 +60,12 @@ def qp_action_map(action, importance):
 
 def legal_actions(importance):
     """Deduplicate identical effective ΔQP maps, e.g. a frame with no objects."""
-    seen=set()
+    seen={qp_action_map(NEUTRAL_ACTION,importance).tobytes()}
     allowed=np.zeros(N_ACTIONS,dtype=bool)
+    allowed[NEUTRAL_ACTION]=True
     for a in range(N_ACTIONS):
+        if a == NEUTRAL_ACTION:
+            continue
         m=qp_action_map(a,importance)
         signature=m.tobytes()
         if signature not in seen:
@@ -80,7 +83,7 @@ def _pool_ctu(map_20x30):
 
 
 def observation(event, source_boxes, *, frames, target_bps, completed,
-                previous_action=NEUTRAL_ACTION, previous_au_bits=0,previous_f1=0.):
+                previous_action=NEUTRAL_ACTION, previous_au_bits=0,previous_f1=0., cumulative_bits=0):
     """Causal observation: 25 global values + five [10,15] maps + legal mask."""
     g=np.asarray(event.get('global'),dtype=np.float64)
     raw=np.asarray(event.get('maps'),dtype=np.float64)
@@ -105,7 +108,7 @@ def observation(event, source_boxes, *, frames, target_bps, completed,
     last_qp=g[3] if completed else g[0]
     stats=np.array([
         g[0]/63., completed/frames, math.log(target_bps/120000.),
-        g[2]/budget, (g[2]-completed*rate_per_frame)/budget,
+        cumulative_bits/budget, (cumulative_bits-completed*rate_per_frame)/budget,
         1.-completed/frames, last_qp/63.,g[4]/63.,
         g[5],g[6],g[7],g[8]/50.,g[9],
         g[10],g[11],np.log1p(max(g[15],0))/12.,
