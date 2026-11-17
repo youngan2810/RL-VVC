@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from scripts.rl_rc_dot.d3qn_method import (
     semantic_importance,action_pair,qp_action_map,legal_actions,observation,
-    reward_step,clip_objective,N_ACTIONS,NEUTRAL_ACTION)
+    reward_step,clip_objective,N_ACTIONS,NEUTRAL_ACTION,balanced_train_video)
 from scripts.rl_rc_dot.d3qn_agent_v2 import DuelingQNetwork,MaskedD3QN
 
 
@@ -25,6 +25,18 @@ def dummy_native_event(step=0):
 
 
 class IndependentActionTests(unittest.TestCase):
+    def test_all_train16_videos_covered_per_epoch(self):
+        ids=['video_%02d'%i for i in range(16)]
+        first=[balanced_train_video(ids,20261111,j) for j in range(16)]
+        second=[balanced_train_video(ids,20261111,j) for j in range(16,32)]
+        self.assertEqual(set(first),set(ids))
+        self.assertEqual(set(second),set(ids))
+        self.assertEqual(len(set(first)),16)
+        self.assertEqual(first,[balanced_train_video(ids,20261111,j) for j in range(16)])
+        self.assertEqual(balanced_train_video(ids,20261111,17),second[1])
+        with self.assertRaises(ValueError):
+            balanced_train_video(ids[:15],20261111,0)
+
     def test_25_exact_integer_actions_and_neutral(self):
         empty=semantic_importance(np.empty((0,5)))
         self.assertEqual(empty.shape,(10,15))
