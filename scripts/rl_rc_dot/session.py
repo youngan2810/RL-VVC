@@ -23,6 +23,14 @@ from .environment import VVenCEnv
 from .method import SCHEMA
 from .model import build
 from .qp_development import PROFILES,definition,check_profile,neutral_action
+from .learning_diagnostics import categorical_metrics
+
+def fixed_minus_two(action_space):
+    action=neutral_action(action_space)
+    if action.shape!=(36,) or not hasattr(action_space,'nvec'):
+        raise ValueError('Fixed -2 control requires integer QP action profile')
+    action[0]=0  # Global bin -2; spatial categories remain neutral.
+    return action
 
 class BudgetStop(Exception):
     pass
@@ -60,7 +68,8 @@ def validate(model,spec,deadline=float("inf"),detector_factory=FrozenDetector,ca
                 controls=Path(spec["output"])/"validation_controls"
                 controls.mkdir(parents=True,exist_ok=True)
                 policies=[('anchor','anchor'),('zero','zero'),('agent','live')]
-                if spec.get('agent_profile')=='qpdev1-qbins':policies.insert(2,('random','live'))
+                if spec.get('agent_profile')=='qpdev1-qbins':
+                    policies[2:2]=[('random','live'),('fixed_m2','live')]
                 for name,mode in policies:
                     cache=controls/f"{video}_{rate}_{name}.json"
                     if name!="agent" and cache.exists():
@@ -73,12 +82,16 @@ def validate(model,spec,deadline=float("inf"),detector_factory=FrozenDetector,ca
                                 agent_profile=spec.get('agent_profile','paper'),evaluation_label=name)
                     random_seed=int(hashlib.sha256(f"{spec['seed']}:{video}:{rate}:random".encode()).hexdigest()[:16],16)
                     random_policy=np.random.default_rng(random_seed)
+                    distribution_records=[]
                     try:
                         obs,_=env.reset(seed=spec["seed"])
                         while True:
                             if time.monotonic()>=deadline:raise BudgetStop("Validation interrupted by session budget")
                             if name=='random':action=random_policy.integers(0,5,size=env.action_space.shape)
+                            elif name=='fixed_m2':action=fixed_minus_two(env.action_space)
                             else:action=model.predict(obs,deterministic=True)[0] if mode=="live" else neutral_action(env.action_space)
+                            if name=='agent' and spec.get('agent_profile')=='qpdev1-qbins':
+                                with torch.no_grad():distribution_records.append(categorical_metrics(model.policy.action_dist))
                             obs,_,done,_,info=env.step(action)
                             if done:break
                         if spec.get('agent_profile')=='qpdev1-qbins' and spec.get('decoder'):
@@ -88,6 +101,8 @@ def validate(model,spec,deadline=float("inf"),detector_factory=FrozenDetector,ca
                                            env.frames,spec['ffmpeg'],spec['decoder'])
                             info['episode']['decoded_reconstruction_verified']=True
                         pair[name]=info["episode"]
+                        if distribution_records:
+                            pair[name]['policy_distribution']={k:float(np.mean([r[k] for r in distribution_records])) for k in distribution_records[0]}
                         if name!="agent":atomic_json(cache,pair[name])
                     finally:env._close_episode()
                 points.append({"video_id":video,"rate_kbps":rate,**pair})
@@ -111,6 +126,8 @@ def validate(model,spec,deadline=float("inf"),detector_factory=FrozenDetector,ca
                 else 'macro mean of per-frame training reward on Validation only')}
     if spec.get('agent_profile')=='qpdev1-qbins':
         result['random_score']=float(np.mean([p['random'][key] for p in points]))
+        result['fixed_m2_score']=float(np.mean([p['fixed_m2'][key] for p in points]))
+        result['macro_delta_f1_vs_fixed_m2']=float(np.mean([p['agent']['f1']-p['fixed_m2']['f1'] for p in points]))
         result['macro_delta_f1_vs_random']=float(np.mean([p['agent']['f1']-p['random']['f1'] for p in points]))
     return result
 
@@ -186,6 +203,10 @@ def ppo_options(args):
     result={"learning_rate":float(args.ppo_learning_rate),
             "n_epochs":int(args.ppo_epochs),"target_kl":float(args.ppo_target_kl),
             "aux_loss_coef":float(args.ppo_aux_loss_coef)}
+    gain=float(getattr(args,'ppo_action_init_gain',0.0))
+    if not np.isfinite(gain) or not 0<=gain<=.1:raise ValueError('PPO requires action init gain in [0, 0.1]')
+    if gain and getattr(args,'agent_profile','paper')!='qpdev1-qbins':raise ValueError('PPO action init gain requires categorical QP profile')
+    if getattr(args,'agent_profile','paper')=='qpdev1-qbins':result['action_init_gain']=gain
     if getattr(args,'agent_profile','paper')!='paper':result.update(gamma=1.0)
     return result
 
@@ -208,6 +229,8 @@ def contract_for(spec):
         result['reward']=result['development']['reward'];result['action']=result['development']['action']
         result['algorithm']='SB3 PPO-Clip + GAE, gamma=1, independent actor/critic, spatial Gaussian residual control where selected'
         if profile=='qpdev1-qbins':result['algorithm']='SB3 PPO-Clip + GAE, gamma=1; same extractor/critic/auxiliary; MultiCategorical integer QP action repair'
+        if profile=='qpdev1-qbins':
+            result['validation']['controls']=['anchor','zero','random','fixed_m2']
     return result
 
 def parser():
@@ -222,6 +245,7 @@ def parser():
     p.add_argument("--additional-timesteps",type=int,default=0,help="Optional session interaction budget, capped by total-timesteps")
     p.add_argument("--rollout-steps",type=int,default=2048)
     p.add_argument("--ppo-learning-rate",type=float,default=3e-5,help="Conservative post-smoke PPO optimizer learning rate")
+    p.add_argument('--ppo-action-init-gain',type=float,default=0.0,help='Categorical QP action weights: 0 historical; 0.01 small orthogonal initialization')
     p.add_argument("--ppo-epochs",type=int,default=3,help="Optimizer passes per PPO rollout")
     p.add_argument("--ppo-target-kl",type=float,default=0.05,help="Stop PPO epoch early above 1.5 times this approximate KL")
     p.add_argument("--ppo-aux-loss-coef",type=float,default=0.1,help="Bounded block-reward MSE weight; set 0 for a controlled ablation")

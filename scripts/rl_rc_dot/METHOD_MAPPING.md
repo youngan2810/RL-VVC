@@ -8,6 +8,44 @@ Operational instructions: [project README](../../README.md).
 
 ## Integer-action repair audit (2026-11-17)
 
+### Real-data learning check following the 5,120-interaction export
+
+Real BDD Mini evidence: all12 learned Validation bitstreams/final-CU samples
+changed and F1 improved1.444pp, while actual bitrate rose1.647%. Global mode
+was-2 on3072/3072frames; its probability averaged only0.201293. This is a weak
+near-uniform ranking, not a confident collapsed categorical distribution.
+Reconstructed5120Train/3072Val states match native event hashes. Context is
+not wholly saturated. No evidence establishes auxiliary causation or a PPO
+ratio error. No encoder, actor architecture, state, reward or auxiliary loss
+change is justified by this export alone.
+
+`VVC_RL_QBins_LearningCheck_Kaggle.ipynb` is a controlled fresh trial: same
+5120interactions/seed/data and LR3e-5, Validation at0/5/10. The
+same-sized categorical head optionally uses orthogonal weights with gain0.01,
+matching SB3's small action initialization; zero initialization previously
+blocked the PPO feature gradient at the first minibatch. Tests verify that
+nonzero gain unblocks it while preserving all other initial parameters,
+including critic/auxiliary, through an RNG fork. Default gain0 retains the
+historical profile; the new notebook explicitly requests0.01. Initial policy
+may produce nonzero actions and is measured separately from No-op. A
+recorded-state head-only optimizer sensitivity probe gave joint KL0.001404
+atLR3e-4 vs0.000013 at3e-5; it is off-policy and cannot establish coding gains.
+Contextual fixture probes did not consistently favor the larger LR, so the
+new notebook retains3e-5 to isolate the initialization change.
+Full-rollout post-update KL, per-global-head probability/margin/entropy and
+one-minibatch on-policy gradient contributions now expose weak updates.
+Gradient measurements do not alter the loss or optimizer gradient.
+
+Categorical Validation now includes cached fixed global-2 control with neutral
+spatial requests. Long-training screening additionally requires objective
+above this control. Existing bitrate<=1%overanchor, target error<=5% and PSNR
+loss<=0.5dB thresholds remain unchanged. Nonzero action alone is insufficient.
+This validates the existing reward, not a hard bitrate constraint. Use
+rate-matched comparison before claiming rate savings. Never force action
+diversity or change argmax to manufacture a positive/zero action histogram.
+Old runs/checkpoints remain historical evidence; the fresh experiment does not
+resume a changed source/validation/optimizer contract. No Test30 is run here.
+
 Evidence: the QPDev1 export completed 20,480 interactions, but all 12 paired
 Validation streams at updates 0/10/20/30/40 were byte-identical to the native
 anchor. Maximum deterministic |delta| was 0.080354 at the last checkpoint;

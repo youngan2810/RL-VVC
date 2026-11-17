@@ -1,5 +1,16 @@
 # RL-VVC
 
+**Lần thử tiếp theo sau QBins5120:** dùng
+[VVC_RL_QBins_LearningCheck_Kaggle.ipynb](notebooks/VVC_RL_QBins_LearningCheck_Kaggle.ipynb).
+Giữ nguyên kiến trúc/state/reward/Auxiliary và action mapping; cùng5120tương tác,
+Mini16/4 và seed. Giữ LR3e-5, sửa head sang orthogonal gain0,01 (cùng kích thước mạng),
+Validation tại0/5/10, thêm fixed ΔQP−2 làm đối chứng,
+ghi KL sau update và xác suất/margin của head toànframe. Đây là thử nghiệm tối ưu hóa
+có kiểm soát, chưa phải bằng chứng coding tốt hơn. MODE=new,1input MOV như trước,
+T4×2; không nạp checkpoint source cũ. Output
+`VVC_RL_QBINS_LEARNINGCHECK_LATEST_KAGGLE_SAFE.zip`. Chưa chạy dài/Test30.
+Giữ nguyên ngưỡng rate/PSNR và chỉ qua screen khi objective hơn cảfixed−2.
+
 Ánh xạ phương pháp RL-RC-DoT sang H.266/VVenC. Repo chính:
 **https://github.com/youngan2810/RL-VVC**, nhánh **main**
 

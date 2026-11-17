@@ -31,7 +31,7 @@ def run(encoder,output,steps=256,decoder=None):
     factory=lambda:VVenCEnv(ProbeCatalog(),ConstantDetector(),encoder,root/'episodes',frame_limit=32,
                            threads=2,agent_profile='qpdev1-qbins')
     env=DummyVecEnv([factory]);model=build(env,20261111,n_steps=32,batch_size=32,n_epochs=3,gamma=1,
-                                        learning_rate=3e-5,target_kl=.05,aux_loss_coef=.1)
+                                        learning_rate=3e-5,action_init_gain=.01,target_kl=.05,aux_loss_coef=.1)
     validator=partial(validate,detector_factory=lambda *a:ConstantDetector(),catalog_factory=lambda *a,**kw:ProbeCatalog())
     updates=[]
     try:
@@ -42,8 +42,10 @@ def run(encoder,output,steps=256,decoder=None):
         model.save(root/'probe_model.zip');atomic_json(root/'updates.json',updates)
     finally:model.get_env().close()
     result={'scope':'SYNTHETIC NATIVE CODEC + CONSTANT DETECTOR FIXTURE',
+            'learning_rate':3e-5,'action_init_gain':.01,
             'interactions':model.num_timesteps,'updates':model.completed_rollouts,
             'noop_objective':trained['zero_score'],'random_objective':trained['random_score'],
+            'fixed_m2_objective':trained['fixed_m2_score'],
             'initial_objective':initial['score'],'trained_objective':trained['score'],
             'trained_f1_delta_vs_noop':trained['macro_delta_f1'],
             'action_statistics':[{k:p['agent'].get(k) for k in ('mean_qp','actual_kbps','requested_nonzero_fraction','native_action_audit')}

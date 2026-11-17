@@ -41,6 +41,8 @@ def summarize(output):
            'nonzero_requested_qp_fraction_above_1percent':nonzero>.01}
     if 'random_score' in best:
         gates['objective_above_random']=best['score']>best['random_score']
+        gates['fixed_minus_two_control_present']='fixed_m2_score' in best
+        gates['objective_above_fixed_minus_two']='fixed_m2_score' in best and best['score']>best['fixed_m2_score']
         gates['all_pairs_actual_rate_error_within_5percent']=all(abs(p['agent']['actual_kbps']/p['rate_kbps']-1)<=.05 for p in best['points'])
         gates['all_pairs_psnr_drop_at_most_0_5db']=all(p['agent']['psnr_y']>=p['anchor']['psnr_y']-.5 for p in best['points'])
     result={'status':'VALIDATION_SCREEN_ONLY','advance_to_long_training':all(gates.values()),
@@ -50,6 +52,11 @@ def summarize(output):
             'macro_rate_increase_percent':100*ratio,'macro_delta_objective':obj,
             'requested_nonzero_fraction':nonzero,'pairs':len(rows),
             'random_score':best.get('random_score'),
+            'fixed_m2_score':best.get('fixed_m2_score'),
+            'delta_objective_vs_fixed_m2':best['score']-best['fixed_m2_score'] if 'fixed_m2_score' in best else None,
+            'policy_distribution':{
+                k:float(np.mean([p['agent']['policy_distribution'][k] for p in best['points']]))
+                for k in best['points'][0]['agent'].get('policy_distribution',{})},
             'interpretation':'Predeclared heuristic screening; not significance, AP improvement, Test results or multi-seed evidence. Compare with corrected paper control at equal budget.'}
     atomic_json(out/'development_summary.json',result)
     import matplotlib
@@ -59,6 +66,8 @@ def summarize(output):
     xs=[v['num_timesteps'] for v in validations]
     axes[0].plot(xs,[v['score'] for v in validations],'o-',label='agent objective')
     axes[0].plot(xs,[v['anchor_score'] for v in validations],'--',label='native anchor');axes[0].legend()
+    if all('fixed_m2_score' in v for v in validations):
+        axes[0].plot(xs,[v['fixed_m2_score'] for v in validations],':',label='fixed delta -2');axes[0].legend()
     axes[0].set(xlabel='Training interactions',ylabel='Validation objective')
     axes[1].plot(xs,[100*v['macro_delta_f1'] for v in validations],'o-');axes[1].axhline(0,color='gray')
     axes[1].set(xlabel='Training interactions',ylabel='Clip F1 gain (percentage points)')

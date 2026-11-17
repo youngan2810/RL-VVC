@@ -171,12 +171,19 @@ class SpatialPolicy(MultiInputActorCriticPolicy):
 
 class QpBinsHead(nn.Module):
     """Same 29-D context and 35 spatial features; five logits per decision."""
-    def __init__(self):
+    def __init__(self,init_gain=0.0):
         super().__init__()
+        if not math.isfinite(init_gain) or not 0<=init_gain<=.1:
+            raise ValueError('Categorical actor init gain must be in [0, 0.1]')
         self.frame=nn.Linear(29,5)
         self.region=nn.Sequential(nn.Linear(30,16),nn.Tanh(),nn.Linear(16,5))
         for layer in (self.frame,self.region[-1]):
             nn.init.zeros_(layer.weight);nn.init.zeros_(layer.bias)
+        if init_gain:
+            # SB3 uses small nonzero orthogonal action weights. Preserve the
+            # outer RNG so critic/auxiliary initializations stay comparable.
+            with torch.random.fork_rng(devices=[]):
+                for layer in (self.frame,self.region[-1]):nn.init.orthogonal_(layer.weight,gain=init_gain)
     def forward(self,features):
         local,context=features[:,:35],features[:,35:]
         fused=torch.cat([local.unsqueeze(-1),context.unsqueeze(1).expand(-1,35,-1)],dim=-1)
@@ -193,10 +200,19 @@ class ZeroTieCategoricals(MultiCategoricalDistribution):
         return torch.stack(actions,dim=1)
 
 class QpBinsPolicy(MultiInputActorCriticPolicy):
+    def __init__(self,*args,action_init_gain=0.0,**kwargs):
+        if not math.isfinite(action_init_gain) or not 0<=action_init_gain<=.1:
+            raise ValueError('Categorical actor init gain must be in [0, 0.1]')
+        self.action_init_gain=float(action_init_gain)
+        super().__init__(*args,**kwargs)
+    def _get_constructor_parameters(self):
+        result=super()._get_constructor_parameters()
+        result['action_init_gain']=self.action_init_gain
+        return result
     def _build(self,lr_schedule):
         super()._build(lr_schedule)
         self.action_dist=ZeroTieCategoricals([5]*36)
-        self.action_net=QpBinsHead().to(self.device)
+        self.action_net=QpBinsHead(self.action_init_gain).to(self.device)
         self.optimizer=self.optimizer_class(self.parameters(),lr=lr_schedule(1),**self.optimizer_kwargs)
 
 def definition(profile):

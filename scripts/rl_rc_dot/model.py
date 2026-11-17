@@ -18,6 +18,7 @@ from stable_baselines3.common.vec_env import VecEnvWrapper
 from .method import wire_map
 from .qp_development import (codec_action,DEV_OBSERVATIONS,DEV_ACTIONS,QP_BIN_ACTIONS,
                              SpatialExtractor,SpatialPolicy,QpBinsPolicy)
+from .learning_diagnostics import categorical_metrics,gradient_metrics,post_update_metrics
 
 OBSERVATIONS=spaces.Dict({"global":spaces.Box(-np.inf,np.inf,(16,),dtype=np.float32),
                          "mb":spaces.Box(-np.inf,np.inf,(4,20,30),dtype=np.float32)})
@@ -188,6 +189,7 @@ class AuxPPO(PPO):
         records=[]
         observed_kl=[]
         stop=False
+        gradient_audit={}
         heartbeat=time.monotonic()
         for epoch in range(self.n_epochs):
             for data in self.rollout_buffer.get(self.batch_size):
@@ -215,6 +217,8 @@ class AuxPPO(PPO):
                     stop=True
                     break
                 self.policy.optimizer.zero_grad()
+                if not records and isinstance(self.action_space,spaces.MultiDiscrete):
+                    gradient_audit=gradient_metrics(policy_loss,self.aux_loss_coef*auxiliary,self.policy)
                 loss.backward()
                 actor_norm,critic_norm=clip_actor_critic_gradients(self.policy,self.max_grad_norm)
                 norm=float(np.hypot(actor_norm,critic_norm))
@@ -238,6 +242,7 @@ class AuxPPO(PPO):
                         probs=torch.stack([x.probs for x in d.distribution],dim=1)
                         logits=self.policy.action_net(self.policy.pi_features_extractor(data.observations))
                         modes=d.mode()
+                        records[-1].update(categorical_metrics(d))
                         records[-1].update(actor_logits_min=float(logits.min()),actor_logits_max=float(logits.max()),
                             action_entropy_per_decision=float(d.entropy().mean()/36),zero_category_probability=float(probs[:,:,2].mean()))
                         for category in range(5):records[-1]['deterministic_category_fraction_'+str(category)]=float((modes==category).float().mean())
@@ -254,6 +259,9 @@ class AuxPPO(PPO):
                                         trained_frames=self.trained_frames,num_timesteps=self.num_timesteps,
                                         max_approx_kl_observed=float(max(observed_kl)),
                                         stopped_by_target_kl=int(stop),target_kl=float(self.target_kl or 0.0))
+        if isinstance(self.action_space,spaces.MultiDiscrete):
+            self.last_update_metrics.update(gradient_audit)
+            self.last_update_metrics.update(post_update_metrics(self.policy,self.rollout_buffer,self.batch_size))
         actions=self.rollout_buffer.actions.reshape(-1,self.action_space.shape[0])
         coarse=np.stack([codec_action(a,self.action_space) for a in actions])
         if hasattr(self.policy,'log_std'):self.last_update_metrics['policy_std']=self.policy.log_std.exp().mean().item()
@@ -284,9 +292,11 @@ class AuxPPO(PPO):
         if hasattr(self.policy,'log_std'):self.logger.record("train/std",self.policy.log_std.exp().mean().item())
 
 def build(env,seed,device="cpu",**options):
+    action_init_gain=float(options.pop('action_init_gain',0.0))
     enhanced=env.observation_space==DEV_OBSERVATIONS
     spatial=env.action_space==DEV_ACTIONS
     categorical=env.action_space==QP_BIN_ACTIONS
+    if action_init_gain and not categorical:raise ValueError('Nonzero action init gain requires categorical QP control')
     if ((env.observation_space!=OBSERVATIONS and not enhanced)
             or (env.action_space!=ACTIONS and not spatial and not categorical) or ((spatial or categorical) and not enhanced)):
         raise ValueError("Method space differs")
@@ -294,4 +304,5 @@ def build(env,seed,device="cpu",**options):
     kwargs={"features_extractor_class":SpatialExtractor if enhanced else StatsCNNExtractor,"net_arch":[],
             "share_features_extractor":False,"normalize_images":False}
     if spatial:kwargs['log_std_init']=-1.8
+    if categorical:kwargs['action_init_gain']=action_init_gain
     return AuxPPO(policy,AuxiliaryLabels(env),seed=seed,device=device,policy_kwargs=kwargs,**options)
