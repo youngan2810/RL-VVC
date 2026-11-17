@@ -51,7 +51,7 @@ Reward từng picture có tổng đúng bằng objective cuối clip khi `gamma=
 | [`d3qn_method.py`](scripts/rl_rc_dot/d3qn_method.py) | State/action/reward + semantic ROI + mask |
 | [`d3qn_agent_v2.py`](scripts/rl_rc_dot/d3qn_agent_v2.py) | Mạng Dueling Double DQN, replay, optimizer, checkpoint |
 | [`d3qn_native_env.py`](scripts/rl_rc_dot/d3qn_native_env.py) | Native environment, **không dùng** `VVenCEnv` PPO |
-| [`d3qn_native_runner.py`](scripts/rl_rc_dot/d3qn_native_runner.py) | Probe + pilot train, Mini16/Val4 |
+| [`d3qn_native_runner.py`](scripts/rl_rc_dot/d3qn_native_runner.py) | Probe, train/resume, Validation tách biệt, Mini16/Val4 |
 | [`test_d3qn_native_v2.py`](scripts/rl_rc_dot/test_d3qn_native_v2.py) | Unit test cho MDP, masking và Double-Q |
 | [`D3QN_NATIVE_MDP_DESIGN.md`](scripts/rl_rc_dot/D3QN_NATIVE_MDP_DESIGN.md) | Đặc tả kỹ thuật và giao thức đánh giá |
 
@@ -90,7 +90,22 @@ Runner probe dùng 6 chính sách cố định, nên cấu hình đầy đủ = 
       --output /kaggle/working/d3qn_v2_train_001 --device cuda:0 \
       --train-steps 5120 --val-videos 4 --val-rates 50,120,200
 
-Pilot 5.120 frame transitions tương ứng 20 episode 256-frame nếu chạy hết. Validation của pha train = **4×3×7 = 84 lượt encode** (sáu đối chứng + D3QN). Đây là một pilot, **chưa phải huấn luyện đầy đủ hoặc chứng minh hội tụ**.
+Pilot 5.120 frame transitions tương ứng 20 episode 256-frame nếu chạy hết. Pha `train` **chỉ train và lưu checkpoint sau mỗi episode**, không tự chạy Validation dài. Có thể nối phiên bằng `--checkpoint-in /path/to/checkpoint.pt`, với cùng source/dataset/encoder/weights/protocol; `--train-steps` là số transitions **bổ sung** của phiên. D3QN lưu đầy đủ replay/optimizer/RNG để resume. Phiên có `--max-hours` + `--session-start-utc` sẽ dừng mềm ở **ranh giới episode** để giữ checkpoint; source Kaggle chưa được kiểm chứng thực tế.
+
+### D. Validation D3QN — chạy riêng sau training
+
+```bash
+python -m scripts.rl_rc_dot.d3qn_native_runner \
+  --phase validate \
+  --input-root /kaggle/input/datasets/robikscube/driving-video-with-object-tracking \
+  --encoder /path/to/repaired/vvencapp --decoder /path/to/vvdecapp \
+  --yolo-repo /path/to/pinned/yolov5 --weights /path/to/pinned/yolov5n.pt \
+  --checkpoint-in /path/to/verified/D3QN/checkpoint.pt \
+  --output /kaggle/working/d3qn_v2_validation_001 --device cuda:0 \
+  --val-videos 4 --val-rates 50,120,200
+```
+
+Validation = **4×3×7 = 84 lượt encode**, gồm sáu đối chứng + D3QN, khá nặng; có thể chia `--val-start 0 --val-videos 2`, rồi `--val-start 2 --val-videos 2`, mỗi phiên dùng cùng checkpoint/source và giữ toàn bộ output. Đây là pilot/đánh giá, **chưa phải chứng minh hội tụ hoặc hơn QPA ở bitrate khớp thực**.
 
 ## 6. Output, kiểm chứng và giới hạn
 
@@ -99,7 +114,7 @@ Pilot 5.120 frame transitions tương ứng 20 episode 256-frame nếu chạy h�
 - `validation.json` và `validation_partial.json`: mỗi video/rate/policy, measured kbps, mean frame F1, objective, VVdeC parity.
 - `trajectory.jsonl.gz`, native logs và action audit: AU bits từng POC, lựa chọn QP, reconstruction hash, QG/lambda (Validation).
 
-**Chưa có:** native test PASS trong môi trường Kaggle, training/resume/best-checkpoint selection, multi-seed, Test30, ground-truth mAP hoặc BD-rate. Để xác định thuật toán D3QN vượt PPO, phải làm ablation với **cùng state/action/reward v2**; các kết quả PPO cũ chỉ là baseline lịch sử.
+**Chưa có:** native test PASS trong môi trường Kaggle, best-checkpoint selection theo Val, multi-seed, Test30, ground-truth mAP hoặc BD-rate. D3QN hiện đã có checkpoint/resume theo episode (full replay/optimizer/RNG) nhưng chưa có bằng chứng đã resume thành công trên Kaggle. Để xác định thuật toán D3QN vượt PPO, phải làm ablation với **cùng state/action/reward v2**; các kết quả PPO cũ chỉ là baseline lịch sử.
 
 ## 7. Lưu trữ tài liệu PPO
 
