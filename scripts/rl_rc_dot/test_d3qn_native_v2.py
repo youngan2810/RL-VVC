@@ -4,6 +4,8 @@ No VVenC binary needed; separate native/decoder validation remains mandatory.
 Run: python -m unittest scripts.rl_rc_dot.test_d3qn_native_v2 -v
 """
 import unittest
+import tempfile
+from pathlib import Path
 import numpy as np
 import torch
 from scripts.rl_rc_dot.d3qn_method import (
@@ -76,6 +78,27 @@ class IndependentActionTests(unittest.TestCase):
 
 
 class MaskedD3QNTests(unittest.TestCase):
+    def test_full_checkpoint_and_strict_resume_identity(self):
+        torch.set_num_threads(1)
+        agent=MaskedD3QN(seed=13,batch_size=4,warmup=4,train_every=1)
+        obs,_=observation(dummy_native_event(),[],frames=256,target_bps=120000,completed=0)
+        for i in range(5):
+            a=agent.predict(obs,epsilon=1.)
+            agent.observe(obs,a,0.002,obs,i==4)
+        agent.steps=256  # Only exercise an episode-boundary snapshot contract.
+        with tempfile.TemporaryDirectory() as temp:
+            file=Path(temp)/'ckpt.pt'
+            identity={'protocol':'unit-test','seed':13}
+            agent.save(file,identity=identity,next_episode_seed=998)
+            restored,next_seed=MaskedD3QN.load(file,identity=identity,device='cpu')
+            self.assertEqual(next_seed,998)
+            self.assertEqual(restored.steps,256)
+            self.assertEqual(restored.updates,agent.updates)
+            self.assertEqual(len(restored.replay),len(agent.replay))
+            self.assertEqual(restored.predict(obs,epsilon=0.),agent.predict(obs,epsilon=0.))
+            with self.assertRaises(ValueError):
+                MaskedD3QN.load(file,identity={'protocol':'wrong'},device='cpu')
+
     def test_replay_and_double_q_update(self):
         torch.set_num_threads(1)
         agent=MaskedD3QN(seed=3,batch_size=4,warmup=4,train_every=1,target_sync_updates=2)
