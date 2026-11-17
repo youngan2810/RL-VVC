@@ -220,7 +220,7 @@ def main():
                             obs=nxt
                         next_seed=int(agent.rng.integers(1,2**31))
                         agent.save(checkpoint,identity=identity,next_episode_seed=next_seed)
-                        averaged={k:float(np.mean([v[k] for v in episode_updates]))
+                        averaged={k:(float(np.mean([v[k] for v in episode_updates])) if episode_updates else None)
                                   for k in ('loss','mean_abs_td','grad_norm','q_gap_valid',
                                             'q_max_valid','unique_greedy_actions_in_batch')}
                         row={'total_steps':agent.steps,'additional_steps':completed_this_run,
