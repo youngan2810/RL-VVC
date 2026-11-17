@@ -18,7 +18,7 @@ import numpy as np
 from .data import VideoCatalog, FrozenDetector, atomic_json, digest, ASSETS, source_fingerprint
 from .d3qn_native_env import D3QNNativeEnv
 from .d3qn_agent_v2 import MaskedD3QN
-from .d3qn_method import NEUTRAL_ACTION, N_ACTIONS, qp_action_map
+from .d3qn_method import NEUTRAL_ACTION, N_ACTIONS, qp_action_map, balanced_train_video
 from .evaluate import verify_decoded
 
 PROTOCOL = 'native-masked-d3qn-qp/v2'
@@ -57,20 +57,6 @@ def parser():
                    help='Optional wall clock budget including Kaggle setup')
     p.add_argument('--session-start-utc',type=float,default=0.)
     return p
-
-
-def balanced_train_video(train_ids, seed, completed_episodes):
-    """Cycle through ALL 16 Mini training videos once per 16 episodes.
-
-    Selection is reproducible from episode index, independent of random
-    spatial-window decisions or agent RNG, including across resume.
-    """
-    ids=list(train_ids)
-    if len(ids)!=16 or len(set(ids))!=16 or completed_episodes<0:
-        raise ValueError('D3QN Mini scheduler requires locked Train16')
-    epoch,index=divmod(int(completed_episodes),16)
-    permutation=np.random.default_rng(np.random.SeedSequence([int(seed),int(epoch),20261117])).permutation(16)
-    return ids[int(permutation[index])]
 
 
 def canonical_fixed_action(action,obs):
