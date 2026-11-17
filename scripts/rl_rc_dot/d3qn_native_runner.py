@@ -46,6 +46,8 @@ def parser():
                    help='Additional 256-frame transitions THIS run; checkpoint remains resumable')
     p.add_argument('--encoder-threads',type=int,default=2)
     p.add_argument('--val-videos',type=int,default=4)
+    p.add_argument('--val-start',type=int,default=0,
+                   help='Start index in locked Mini Val4 (for chunked Kaggle validation)')
     p.add_argument('--val-rates',default='50,120,200')
     p.add_argument('--max-hours',type=float,default=0.,
                    help='Optional wall clock budget including Kaggle setup')
@@ -101,7 +103,7 @@ def run_validation(args,catalog,detector,agent,identity,deadline):
     else:
         if agent is None:raise ValueError('Trained agent missing for validate')
         methods=[*FIXED_CONTROLS,('trained_d3qn',None)]
-    for video in catalog.selected['val'][:args.val_videos]:
+    for video in catalog.selected['val'][args.val_start:args.val_start+args.val_videos]:
         for rate in rates:
             for name,fixed in methods:
                 if time.time()>=deadline:
@@ -133,10 +135,11 @@ def main():
     args=parser().parse_args()
     rates=[int(v) for v in args.val_rates.split(',')]
     if (args.train_steps<256 or args.train_steps%256 or not 1<=args.val_videos<=4
+            or not 0<=args.val_start<=4 or args.val_start+args.val_videos>4
             or args.encoder_threads<1 or args.max_hours<0
             or not rates or len(set(rates))!=len(rates) or any(not 50<=r<=200 for r in rates)):
         raise ValueError('Require 256-multiple train steps, <=4 Val videos, 50..200 kbps rates')
-    if args.phase in ('probe','train') and args.checkpoint_in is not None and args.phase=='probe':
+    if args.phase=='probe' and args.checkpoint_in is not None:
         raise ValueError('Probe is fixed-action only; checkpoint is irrelevant')
     if args.phase=='validate' and args.checkpoint_in is None:
         raise ValueError('Validate needs --checkpoint-in from a completed D3QN episode')
@@ -153,9 +156,10 @@ def main():
               'detector_sha256':digest(args.weights),
               'frames':256,'qp_offsets':[-2,-1,0,1,2],'reward':'d3qn_v2_0.15_3.0_0.02'}
     contract={**identity,'phase':args.phase,'additional_steps':args.train_steps,
-              'val_videos':args.val_videos,'val_rates':rates,
+              'val_videos':args.val_videos,'val_start':args.val_start,'val_rates':rates,
               'source_detector_before_action':True,'decoder_sha256':digest(args.decoder),
-              'clock_budget_hours':args.max_hours}
+              'clock_budget_hours':args.max_hours,
+              'epsilon_decay_steps':5120}
     atomic_json(args.output/'contract.json',contract)
     detector=FrozenDetector(args.yolo_repo,args.weights,args.device)
     status='not_started'
@@ -187,7 +191,7 @@ def main():
                         total_reward=0.;last_update=None
                         while True:
                             i=completed_this_run
-                            epsilon=max(.05,1.-.95*min(1.,(i+agent.steps-completed_this_run)/max(args.train_steps,agent.steps+args.train_steps)))
+                            epsilon=max(.05,1.-.95*min(1.,agent.steps/5120.))
                             action=agent.predict(obs,epsilon=epsilon)
                             nxt,reward,done,truncated,info=train.step(action)
                             if truncated:raise RuntimeError('Truncated native episode')
@@ -195,6 +199,9 @@ def main():
                             last_update=agent.observe(obs,action,reward,nxt,done) or last_update
                             total_reward+=reward
                             completed_this_run+=1
+                            if completed_this_run%32==0:
+                                print('TRAIN_HEARTBEAT',agent.steps,'episode',meta['video_id'],
+                                      'rate',meta['rate_kbps'],'epsilon',round(epsilon,4),flush=True)
                             if done:break
                             obs=nxt
                         next_seed=int(agent.rng.integers(1,2**31))
