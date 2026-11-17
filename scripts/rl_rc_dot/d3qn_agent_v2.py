@@ -36,7 +36,16 @@ class DuelingQNetwork(nn.Module):
             raise ValueError('Invalid D3QN state tensor dimensions')
         context=self.fusion(torch.cat([glob,self.spatial(maps)],dim=1))
         v,a=self.value(context),self.advantage(context)
-        return v+a-a.mean(dim=1,keepdim=True)
+        # Invalid action advantages must NOT change values of legal actions.
+        # Dueling mean is computed over the currently legal actions only.
+        legal=obs.get('legal')
+        if legal is None or legal.ndim!=2 or tuple(legal.shape)!=(glob.shape[0],N_ACTIONS) or legal.dtype!=torch.bool:
+            raise ValueError('Dueling Q network requires a Boolean legal-action mask')
+        if not bool(legal.any(dim=1).all().item()):
+            raise ValueError('Every D3QN state needs at least one legal action')
+        count=legal.sum(dim=1,keepdim=True).clamp_min(1)
+        mean_a=(a*legal).sum(dim=1,keepdim=True)/count
+        return v+a-mean_a
 
 
 def pack(obs):
