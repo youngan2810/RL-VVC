@@ -21,8 +21,8 @@ from .d3qn_method import (NEUTRAL_ACTION, observation, qp_action_map,
 class D3QNNativeEnv:
     def __init__(self,catalog,detector,encoder,output,*,split='train',frames=256,
                  rate=None,video=None,threads=2,mode='live',random_windows=False,retain_media=False):
-        if split not in ('train','val','test') or mode not in ('anchor','live'):
-            raise ValueError('Invalid split or native control mode')
+        if split not in ('train','val') or mode not in ('anchor','live'):
+            raise ValueError('D3QN learning-check environment permits Train16 and Val4 only; Test30 is disabled')
         if frames<1 or threads<1:
             raise ValueError('Invalid frame/threads')
         self.ids=list(catalog.selected[split])
