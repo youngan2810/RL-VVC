@@ -15,6 +15,7 @@ from .data import ASSETS, FrozenDetector, VideoCatalog, atomic_json, digest, sou
 from .environment import VVenCEnv
 from .method import FRAME_BYTES
 from .model import AuxPPO
+from .qp_development import neutral_action
 from .artifacts import RUN_SCHEMA,policy_digest,import_run,export_evaluation
 
 class EvaluationStop(Exception):pass
@@ -75,7 +76,7 @@ def run_pair_method(model, catalog, detector, args, root, video_id, rate, name, 
         done = False
         while not done:
             if time.monotonic()>=args.deadline:raise EvaluationStop("Soft evaluation budget reached")
-            action = np.zeros(env.action_space.shape) if name == "vvenc" else model.predict(obs, deterministic=True)[0]
+            action = neutral_action(env.action_space) if name == "vvenc" else model.predict(obs, deterministic=True)[0]
             obs, _, done, _, info = env.step(action)
         env.trajectory.close()
         env.trajectory = None

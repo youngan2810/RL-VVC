@@ -127,14 +127,14 @@ def export_run(output,destination,include_evidence=True):
         if ref:
             directory,_=read_checkpoint(output,ref)
             selected.update(p for p in directory.rglob("*") if p.is_file())
-    for name in ("method.json","progress.json","session.json","dataset_selection.json","history.json","README_RUN.txt","failure.json","preflight/PREFLIGHT.json"):
+    for name in ("method.json","progress.json","session.json","dataset_selection.json","history.json","README_RUN.txt","failure.json","preflight/PREFLIGHT.json","preflight/ACTION_PREFLIGHT.json"):
         p=output/name
         if p.is_file():selected.add(p)
     for name in ("metrics","validations","reports"):
         p=output/name
         if p.exists():selected.update(v for v in p.rglob("*") if v.is_file())
     if include_evidence:
-        for name in ("episodes","validation_media"):
+        for name in ("episodes","validation_media","action_preflight"):
             p=output/name
             if p.exists():selected.update(v for v in p.rglob("*") if v.is_file() and v.suffix not in (".tmp",".yuv"))
     files={p.relative_to(output).as_posix():digest(p) for p in sorted(selected)}

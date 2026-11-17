@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import time
 import uuid
+import hashlib
 import numpy as np
 import torch
 from stable_baselines3.common.callbacks import BaseCallback
@@ -21,7 +22,7 @@ from .data import ASSETS,MINI_COUNTS,FrozenDetector,VideoCatalog,atomic_json,dig
 from .environment import VVenCEnv
 from .method import SCHEMA
 from .model import build
-from .qp_development import PROFILES,definition,check_profile
+from .qp_development import PROFILES,definition,check_profile,neutral_action
 
 class BudgetStop(Exception):
     pass
@@ -58,7 +59,9 @@ def validate(model,spec,deadline=float("inf"),detector_factory=FrozenDetector,ca
                 pair={}
                 controls=Path(spec["output"])/"validation_controls"
                 controls.mkdir(parents=True,exist_ok=True)
-                for name,mode in (("anchor","anchor"),("zero","zero"),("agent","live")):
+                policies=[('anchor','anchor'),('zero','zero'),('agent','live')]
+                if spec.get('agent_profile')=='qpdev1-qbins':policies.insert(2,('random','live'))
+                for name,mode in policies:
                     cache=controls/f"{video}_{rate}_{name}.json"
                     if name!="agent" and cache.exists():
                         pair[name]=json.loads(cache.read_text())
@@ -67,14 +70,23 @@ def validate(model,spec,deadline=float("inf"),detector_factory=FrozenDetector,ca
                     env=VVenCEnv(catalog,detector,spec["encoder"],Path(spec["output"])/"validation_media"/str(model.completed_rollouts),
                                 split="val",frame_limit=spec["validation_frames"],threads=spec["encoder_threads"],
                                 fixed_video=video,fixed_rate=rate,mode=mode,
-                                agent_profile=spec.get('agent_profile','paper'))
+                                agent_profile=spec.get('agent_profile','paper'),evaluation_label=name)
+                    random_seed=int(hashlib.sha256(f"{spec['seed']}:{video}:{rate}:random".encode()).hexdigest()[:16],16)
+                    random_policy=np.random.default_rng(random_seed)
                     try:
                         obs,_=env.reset(seed=spec["seed"])
                         while True:
                             if time.monotonic()>=deadline:raise BudgetStop("Validation interrupted by session budget")
-                            action=model.predict(obs,deterministic=True)[0] if mode=="live" else np.zeros(env.action_space.shape)
+                            if name=='random':action=random_policy.integers(0,5,size=env.action_space.shape)
+                            else:action=model.predict(obs,deterministic=True)[0] if mode=="live" else neutral_action(env.action_space)
                             obs,_,done,_,info=env.step(action)
                             if done:break
+                        if spec.get('agent_profile')=='qpdev1-qbins' and spec.get('decoder'):
+                            from .evaluate import verify_decoded
+                            env.trajectory.close();env.trajectory=None
+                            verify_decoded(env.native.output/'stream.266',env.native.output.parent/'trajectory.jsonl.gz',
+                                           env.frames,spec['ffmpeg'],spec['decoder'])
+                            info['episode']['decoded_reconstruction_verified']=True
                         pair[name]=info["episode"]
                         if name!="agent":atomic_json(cache,pair[name])
                     finally:env._close_episode()
@@ -82,7 +94,7 @@ def validate(model,spec,deadline=float("inf"),detector_factory=FrozenDetector,ca
     finally:detector.close()
     development=spec.get('agent_profile','paper')!='paper'
     key='objective_score' if development else 'mean_reward'
-    return {"score":float(np.mean([p["agent"][key] for p in points])),
+    result={"score":float(np.mean([p["agent"][key] for p in points])),
             "anchor_score":float(np.mean([p["anchor"][key] for p in points])),
             "zero_score":float(np.mean([p["zero"][key] for p in points])),
             "macro_delta_precision":float(np.mean([p["agent"]["mean_precision"]-p["anchor"]["mean_precision"] for p in points])),
@@ -97,6 +109,10 @@ def validate(model,spec,deadline=float("inf"),detector_factory=FrozenDetector,ca
             "points":points,"policy_sha256":policy_digest(model),"completed_rollouts":model.completed_rollouts,
             "num_timesteps":model.num_timesteps,"selection":('macro final clip objective (same as undiscounted training return)' if development
                 else 'macro mean of per-frame training reward on Validation only')}
+    if spec.get('agent_profile')=='qpdev1-qbins':
+        result['random_score']=float(np.mean([p['random'][key] for p in points]))
+        result['macro_delta_f1_vs_random']=float(np.mean([p['agent']['f1']-p['random']['f1'] for p in points]))
+    return result
 
 class SaveAndValidate(BaseCallback):
     def __init__(self,spec,contract,deadline=float("inf"),validator=validate):
@@ -149,6 +165,10 @@ class SaveAndValidate(BaseCallback):
                   "seconds_to_soft_stop":max(0,self.deadline-time.monotonic()) if np.isfinite(self.deadline) else None}),flush=True)
             self.last_heartbeat=time.monotonic()
         for info in self.locals.get("infos",[]):
+            if 'native_action_audit' in info:
+                append_json(self.output/'metrics/actions.jsonl',{'num_timesteps':self.num_timesteps,
+                    'video_id':info['video_id'],'rate_kbps':info['rate_kbps'],'poc':info['poc'],
+                    **info['native_action_audit']})
             if "episode" in info:
                 append_json(self.output/"metrics/episodes.jsonl",
                     {"num_timesteps":self.num_timesteps,"video_id":info["video_id"],"rate_kbps":info["rate_kbps"],**info["episode"]})
@@ -187,6 +207,7 @@ def contract_for(spec):
         result['development']=definition(profile)
         result['reward']=result['development']['reward'];result['action']=result['development']['action']
         result['algorithm']='SB3 PPO-Clip + GAE, gamma=1, independent actor/critic, spatial Gaussian residual control where selected'
+        if profile=='qpdev1-qbins':result['algorithm']='SB3 PPO-Clip + GAE, gamma=1; same extractor/critic/auxiliary; MultiCategorical integer QP action repair'
     return result
 
 def parser():
@@ -195,6 +216,7 @@ def parser():
     p.add_argument("--decoder",type=Path,required=True,help="Pinned VVdeC binary for preflight")
     p.add_argument("--mode",choices=("new","resume"),default="new")
     p.add_argument('--agent-profile',choices=PROFILES,default='paper',help='qpdev1 is the proposed state + reward + spatial QP method; paper is the technical control')
+    p.add_argument('--allow-long-training',action='store_true',help='Integer action profile: requires a passed short-run screening before a session exceeding 5120 interactions')
     p.add_argument("--resume-from",type=Path)
     p.add_argument("--total-timesteps",type=int,default=20_000_000)
     p.add_argument("--additional-timesteps",type=int,default=0,help="Optional session interaction budget, capped by total-timesteps")
@@ -249,6 +271,10 @@ def main():
         if a.mode!="resume":p.error("--resume-from requires --mode resume")
         import_run(a.resume_from,output)
     output.mkdir(parents=True,exist_ok=True)
+    if spec['agent_profile']=='qpdev1-qbins' and (a.additional_timesteps==0 or a.additional_timesteps>5120):
+        screen=output/'reports/development_summary.json'
+        if not a.allow_long_training or not screen.exists() or not json.loads(screen.read_text()).get('advance_to_long_training'):
+            raise ValueError('Integer-action repair starts with --additional-timesteps <=5120. Long training requires a passed prior short Validation screen and --allow-long-training.')
     contract=contract_for(spec)
     config=output/"method.json"
     if a.mode=="new" and any(output.iterdir()):raise FileExistsError("New run output is nonempty; use resume")
@@ -279,6 +305,15 @@ def main():
         preflight_dir=output/("preflight_"+uuid.uuid4().hex[:8])
         result=native_preflight(a.encoder,preflight_dir,a.ffmpeg,frames=32,threads=a.encoder_threads,decoder=a.decoder)
         atomic_json(certificate,result)
+    if spec['agent_profile']=='qpdev1-qbins':
+        from .action_preflight import run as action_preflight
+        action_certificate=output/'preflight/ACTION_PREFLIGHT.json'
+        previous=json.loads(action_certificate.read_text()) if action_certificate.exists() else {}
+        if (previous.get('encoder_sha256')!=digest(a.encoder) or previous.get('decoder_sha256')!=digest(a.decoder)
+                or previous.get('action_contract')!='qpdev1-integer-action/1'):
+            tested=action_preflight(a.encoder,output/('action_preflight/'+uuid.uuid4().hex[:8]),decoder=a.decoder)
+            atomic_json(action_certificate,tested)
+        print('INTEGER_ACTION_MAPPING_BITSTREAM_DECODE_PASS',flush=True)
     env=None;model=None;callback=None;failed=None
     try:
         if time.monotonic()>=deadline:raise BudgetStop("Setup consumed the session budget")

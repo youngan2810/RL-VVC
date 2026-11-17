@@ -10,21 +10,52 @@ from torch import nn
 from gymnasium import spaces
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.policies import MultiInputActorCriticPolicy
+from stable_baselines3.common.distributions import MultiCategoricalDistribution
 from .method import observation, action_map,detection_assignments
 
-PROFILES=('paper','qpdev-reward','qpdev-state','qpdev1')
+PROFILES=('paper','qpdev-reward','qpdev-state','qpdev1','qpdev1-qbins')
 VERSION='vvc-qp-development/1'
 RATE_WEIGHT=0.1
 DEV_OBSERVATIONS=spaces.Dict({
     'global':spaces.Box(-np.inf,np.inf,(32,),dtype=np.float32),
     'mb':spaces.Box(-np.inf,np.inf,(6,20,30),dtype=np.float32)})
 DEV_ACTIONS=spaces.Box(-10,10,(36,),dtype=np.float32)
+QP_BIN_ACTIONS=spaces.MultiDiscrete(np.full(36,5,dtype=np.int64))
+QP_BINS=np.array([-2,-1,0,1,2],dtype=np.int64)
 
 def check_profile(profile):
     if profile not in PROFILES:raise ValueError('Unknown agent profile: '+str(profile))
     return profile
 
-def augmented(profile):return check_profile(profile) in ('qpdev-state','qpdev1')
+def augmented(profile):return check_profile(profile) in ('qpdev-state','qpdev1','qpdev1-qbins')
+
+def neutral_action(action_space):
+    """Category 2 means zero QP; floating legacy controls retain all zeros."""
+    return np.full(action_space.shape,2,dtype=np.int64) if isinstance(action_space,spaces.MultiDiscrete) else np.zeros(action_space.shape)
+
+def map_qp_bins(action):
+    """Integer frame/residual QP choices, held over spatial tiles before QG pooling.
+
+    Only the action interface changes: same state, extractor, critic, reward,
+    auxiliary labels, PPO settings and codec. Native QG pooling remains in force.
+    Integer centering preserves integer requests; unlike continuous mean
+    subtraction it does not recreate sub-half-QP requests on tile interiors.
+    """
+    a=np.asarray(action)
+    if a.shape!=(36,) or not np.isfinite(a).all() or (a!=np.floor(a)).any() or (a<0).any() or (a>4).any():
+        raise ValueError('Expected 36 integer category indices in [0,4]')
+    chosen=QP_BINS[a.astype(np.int64)]
+    coarse=chosen[1:].reshape(5,7)
+    # Fixed research profile is 15x10 CTU32. Keep each 2x2 group of
+    # 16-pixel cells homogeneous, including intra sub-QGs within the CTU.
+    ys=np.arange(10)*5//10;xs=np.arange(15)*7//15
+    tiles=coarse[ys[:,None],xs[None,:]]
+    spatial=np.repeat(np.repeat(tiles,2,axis=0),2,axis=1).astype(np.float64)
+    mean=float(spatial.mean());center=np.sign(mean)*np.floor(abs(mean)+.5)
+    return chosen[0]+spatial-center
+
+def codec_action(action,action_space):
+    return map_qp_bins(action) if isinstance(action_space,spaces.MultiDiscrete) else map_action(action)
 
 def map_action(action):
     """35 = historical action; 36 = frame offset + centered spatial residual.
@@ -138,11 +169,45 @@ class SpatialPolicy(MultiInputActorCriticPolicy):
         self.action_net=SpatialActionHead().to(self.device)
         self.optimizer=self.optimizer_class(self.parameters(),lr=lr_schedule(1),**self.optimizer_kwargs)
 
+class QpBinsHead(nn.Module):
+    """Same 29-D context and 35 spatial features; five logits per decision."""
+    def __init__(self):
+        super().__init__()
+        self.frame=nn.Linear(29,5)
+        self.region=nn.Sequential(nn.Linear(30,16),nn.Tanh(),nn.Linear(16,5))
+        for layer in (self.frame,self.region[-1]):
+            nn.init.zeros_(layer.weight);nn.init.zeros_(layer.bias)
+    def forward(self,features):
+        local,context=features[:,:35],features[:,35:]
+        fused=torch.cat([local.unsqueeze(-1),context.unsqueeze(1).expand(-1,35,-1)],dim=-1)
+        return torch.cat([self.frame(context),self.region(fused).flatten(1)],dim=1)
+
+class ZeroTieCategoricals(MultiCategoricalDistribution):
+    """Choose zero only among exactly tied maxima, without biasing probabilities."""
+    def mode(self):
+        actions=[]
+        for d in self.distribution:
+            mode=d.probs.argmax(dim=1)
+            mode=torch.where(d.probs[:,2]==d.probs.max(dim=1).values,torch.full_like(mode,2),mode)
+            actions.append(mode)
+        return torch.stack(actions,dim=1)
+
+class QpBinsPolicy(MultiInputActorCriticPolicy):
+    def _build(self,lr_schedule):
+        super()._build(lr_schedule)
+        self.action_dist=ZeroTieCategoricals([5]*36)
+        self.action_net=QpBinsHead().to(self.device)
+        self.optimizer=self.optimizer_class(self.parameters(),lr=lr_schedule(1),**self.optimizer_kwargs)
+
 def definition(profile):
     check_profile(profile)
-    return {'version':VERSION,'profile':profile,'reward':'mean-frame F1 - 0.1*abs(log(final_rate/target)); telescoping rate cost; gamma=1',
+    result={'version':VERSION,'profile':profile,'reward':'mean-frame F1 - 0.1*abs(log(final_rate/target)); telescoping rate cost; gamma=1',
             'state':'32 globals + 6 maps, encoder-only causal history' if augmented(profile) else 'historical 16+4',
             'action':'Gaussian36: frame +/-2 + centered spatial +/-4; total +/-6; native QPA residual' if profile=='qpdev1' else 'historical Gaussian35',
             'validation':'macro final clip objective; paired anchor and fresh initial-policy controls',
             'auxiliary':'box-area local F1 retention, including missed source objects and false-positive regions',
             'empty_frame_f1':0.0,'rate_weight':RATE_WEIGHT}
+    if profile=='qpdev1-qbins':
+        result['action']='MultiCategorical36x5; integer QP [-2,-1,0,1,2]; frame+CTU32-aligned spatial tiles; integer mean-centering; native QG pooling; total within +/-6'
+        result['action_contract']='qpdev1-integer-action/1'
+    return result

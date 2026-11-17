@@ -16,7 +16,8 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.utils import explained_variance
 from stable_baselines3.common.vec_env import VecEnvWrapper
 from .method import wire_map
-from .qp_development import map_action, DEV_OBSERVATIONS, DEV_ACTIONS, SpatialExtractor, SpatialPolicy
+from .qp_development import (codec_action,DEV_OBSERVATIONS,DEV_ACTIONS,QP_BIN_ACTIONS,
+                             SpatialExtractor,SpatialPolicy,QpBinsPolicy)
 
 OBSERVATIONS=spaces.Dict({"global":spaces.Box(-np.inf,np.inf,(16,),dtype=np.float32),
                          "mb":spaces.Box(-np.inf,np.inf,(4,20,30),dtype=np.float32)})
@@ -34,7 +35,7 @@ def clip_actor_critic_gradients(policy,max_norm):
     critic_modules=(policy.vf_features_extractor,policy.mlp_extractor.value_net,
                     policy.value_net)
     actor=[p for module in actor_modules for p in module.parameters() if p.requires_grad]
-    actor.append(policy.log_std)
+    if hasattr(policy,'log_std'):actor.append(policy.log_std)
     critic=[p for module in critic_modules for p in module.parameters() if p.requires_grad]
     actor_ids={id(p) for p in actor}
     critic_ids={id(p) for p in critic}
@@ -120,7 +121,7 @@ class AuxBuffer(DictRolloutBuffer):
         if self.label_source is None:raise ValueError("Auxiliary label source is missing")
         labels=self.label_source.last_block_reward.copy()
         consumed=self.label_source.last_consumed_action
-        expected=np.stack([wire_map(map_action(a)) for a in np.asarray(action).reshape(self.n_envs,-1)])
+        expected=np.stack([wire_map(codec_action(a,self.action_space)) for a in np.asarray(action).reshape(self.n_envs,-1)])
         if not np.array_equal(expected,consumed):
             raise ValueError("Raw Gaussian action does not match the encoder-consumed map")
         self.auxiliary[self.pos]=labels
@@ -231,6 +232,15 @@ class AuxPPO(PPO):
                     "auxiliary_prediction_active_mean":float(
                         (auxiliary_prediction.detach()*data.auxiliary_mask).sum().item()
                         /max(data.auxiliary_mask.sum().item(),1.0))})
+                if isinstance(self.action_space,spaces.MultiDiscrete):
+                    with torch.no_grad():
+                        d=self.policy.get_distribution(data.observations)
+                        probs=torch.stack([x.probs for x in d.distribution],dim=1)
+                        logits=self.policy.action_net(self.policy.pi_features_extractor(data.observations))
+                        modes=d.mode()
+                        records[-1].update(actor_logits_min=float(logits.min()),actor_logits_max=float(logits.max()),
+                            action_entropy_per_decision=float(d.entropy().mean()/36),zero_category_probability=float(probs[:,:,2].mean()))
+                        for category in range(5):records[-1]['deterministic_category_fraction_'+str(category)]=float((modes==category).float().mean())
             self._n_updates+=1
             if time.monotonic()-heartbeat>=15:
                 print("PPO_OPTIMIZING",f"epoch={epoch+1}/{self.n_epochs}",f"optimizer_steps={len(records)}",flush=True)
@@ -245,9 +255,12 @@ class AuxPPO(PPO):
                                         max_approx_kl_observed=float(max(observed_kl)),
                                         stopped_by_target_kl=int(stop),target_kl=float(self.target_kl or 0.0))
         actions=self.rollout_buffer.actions.reshape(-1,self.action_space.shape[0])
-        coarse=np.stack([map_action(a) for a in actions])
-        self.last_update_metrics.update(policy_std=self.policy.log_std.exp().mean().item(),
-            coarse_delta_mean=float(coarse.mean()),coarse_delta_std=float(coarse.std()),
+        coarse=np.stack([codec_action(a,self.action_space) for a in actions])
+        if hasattr(self.policy,'log_std'):self.last_update_metrics['policy_std']=self.policy.log_std.exp().mean().item()
+        else:self.last_update_metrics['categorical_policy']=1.0
+        if isinstance(self.action_space,spaces.MultiDiscrete):
+            for category in range(5):self.last_update_metrics['sampled_category_fraction_'+str(category)]=float((actions==category).mean())
+        self.last_update_metrics.update(coarse_delta_mean=float(coarse.mean()),coarse_delta_std=float(coarse.std()),
             coarse_delta_saturated_fraction=float((np.abs(coarse)>=(5.75 if self.action_space.shape==(36,) else 11.5)).mean()),
             requested_map_spatial_std=float(coarse.std(axis=(1,2)).mean()),
             requested_map_abs_delta=float(np.abs(coarse).mean()))
@@ -268,15 +281,16 @@ class AuxPPO(PPO):
         for key,value in self.last_update_metrics.items():
             if not np.isfinite(value):raise ValueError(f"Nonfinite diagnostic {key}")
             self.logger.record("train/"+key,value)
-        self.logger.record("train/std",self.policy.log_std.exp().mean().item())
+        if hasattr(self.policy,'log_std'):self.logger.record("train/std",self.policy.log_std.exp().mean().item())
 
 def build(env,seed,device="cpu",**options):
     enhanced=env.observation_space==DEV_OBSERVATIONS
     spatial=env.action_space==DEV_ACTIONS
+    categorical=env.action_space==QP_BIN_ACTIONS
     if ((env.observation_space!=OBSERVATIONS and not enhanced)
-            or (env.action_space!=ACTIONS and not spatial) or (spatial and not enhanced)):
+            or (env.action_space!=ACTIONS and not spatial and not categorical) or ((spatial or categorical) and not enhanced)):
         raise ValueError("Method space differs")
-    policy=SpatialPolicy if spatial else "MultiInputPolicy"
+    policy=QpBinsPolicy if categorical else SpatialPolicy if spatial else "MultiInputPolicy"
     kwargs={"features_extractor_class":SpatialExtractor if enhanced else StatsCNNExtractor,"net_arch":[],
             "share_features_extractor":False,"normalize_images":False}
     if spatial:kwargs['log_std_init']=-1.8

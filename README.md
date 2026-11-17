@@ -9,6 +9,25 @@ state/action/reward và các khác biệt với paper nằm trong
 
 ## Phạm vi và phiên bản hiện tại
 
+### Sửa riêng action — 17/11/2026
+
+QPDev1 Gaussian đã chạy đủ 20.480 tương tác nhưng mean action dưới 0,084 QP,
+nên toàn bộ Validation giữ bitstream như VVC. Giữ bản đó làm đối chứng.
+Profile sửa **`qpdev1-qbins`** chỉ đổi đầu action và ánh xạ: PPO MultiCategorical
+chọn ΔQP nguyên {-2,-1,0,1,2}; các ô trong CTU32 đồng nhất để không triệt tiêu
+trong QG. State, extractor, Critic, Auxiliary, reward, optimizer và dataset giữ nguyên
+
+Dùng [notebook ActionFix Short](notebooks/VVC_RL_QPDev1_ActionFix_Short_Kaggle.ipynb):
+`MODE='new'`, 5.120 tương tác đầu, Train16/Val4, T4×2, cùng MOV input cũ.
+Không resume checkpoint Gaussian. Chỉ chạy training sau gate map/QG/QP,
+bitstream và VVdeC PASS; chưa tự chạy dài hoặc Test30. Validation có Random,
+No-op/anchor và policy đã train. SAFE lưu chẩn đoán effective QP và reward
+
+Chi tiết đường action, phương án so sánh, kiểu dữ liệu và giới hạn nằm trong
+[audit kỹ thuật](scripts/rl_rc_dot/METHOD_MAPPING.md#integer-action-repair-audit-2026-11-17).
+Qua kiểm thử cơ chế không đồng nghĩa học được policy tốt hơn; phải đọc kết quả
+short Validation trước khi quyết định training tiếp
+
 ### Phương pháp đề xuất QP Development v1
 
 Notebook phát triển khuyến nghị: [VVC_RL QPDev1 Train + Validation](notebooks/VVC_RL_QPDev1_Train_Validation_Kaggle.ipynb)

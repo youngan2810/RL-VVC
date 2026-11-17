@@ -53,6 +53,7 @@ jobs:
       - name: Real state/action/AU/CU/decoder and isolated POC gates
         run: |
           python -m scripts.rl_rc_dot.preflight --encoder bin/release-static/vvencapp --decoder tools/vvdec/bin/release-static/vvdecapp --output checks/native --frames 32
+          python -m scripts.rl_rc_dot.action_preflight --encoder bin/release-static/vvencapp --decoder tools/vvdec/bin/release-static/vvdecapp --output checks/integer-actions --frames 32
       - uses: actions/upload-artifact@v4
         with:
           name: native-binaries
@@ -63,7 +64,7 @@ jobs:
         if: always()
         with:
           name: codec-evidence
-          path: checks/native
+          path: checks
 
   native-ppo:
     needs: native
@@ -79,11 +80,19 @@ jobs:
           name: native-binaries
       - name: Python dependencies
         run: |
-          chmod +x bin/release-static/vvencapp
+          chmod +x bin/release-static/vvencapp tools/vvdec/bin/release-static/vvdecapp
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -r scripts/rl_rc_dot/requirements.txt
       - name: Real codec to PPO update to fresh checkpoint rollout
         env:
           RCDOT_TEST_ENCODER: ${{ github.workspace }}/bin/release-static/vvencapp
+          RCDOT_TEST_DECODER: ${{ github.workspace }}/tools/vvdec/bin/release-static/vvdecapp
           OMP_NUM_THREADS: '2'
-        run: python -m unittest scripts.rl_rc_dot.test_native_integrated scripts.rl_rc_dot.test_qp_development.DevelopmentNative -v
+        run: |
+          python -m unittest scripts.rl_rc_dot.test_native_integrated scripts.rl_rc_dot.test_qp_development.DevelopmentNative scripts.rl_rc_dot.test_action_bins.IntegerNative -v
+          python -m scripts.rl_rc_dot.action_short_probe --encoder bin/release-static/vvencapp --decoder tools/vvdec/bin/release-static/vvdecapp --output checks/short-probe --steps 256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integer-action-short-probe
+          path: checks/short-probe

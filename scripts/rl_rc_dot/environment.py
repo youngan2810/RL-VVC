@@ -14,8 +14,8 @@ from .codec import NativeEpisode
 from .method import FRAME_BYTES, action_map, observation, score, auxiliary_supervision_mask, training_reward
 from .model import ACTIONS, OBSERVATIONS
 from .data import atomic_json
-from .qp_development import (check_profile,augmented,DEV_ACTIONS,DEV_OBSERVATIONS,
-                             map_action,state as development_state,reward_increment,task_f1,clip_objective,retention_supervision)
+from .qp_development import (check_profile,augmented,DEV_ACTIONS,DEV_OBSERVATIONS,QP_BIN_ACTIONS,
+                             codec_action,state as development_state,reward_increment,task_f1,clip_objective,retention_supervision)
 
 
 class VVenCEnv(gym.Env):
@@ -24,10 +24,11 @@ class VVenCEnv(gym.Env):
 
     def __init__(self, catalog, detector, encoder, output, *, split="train", frame_limit=0, threads=2,
                  fixed_video=None, fixed_rate=None, mode="live", retain_media=False, random_windows=False,
-                 agent_profile="paper"):
+                 agent_profile="paper",evaluation_label="agent"):
+        self.evaluation_label=evaluation_label
         self.agent_profile=check_profile(agent_profile)
         self.observation_space=DEV_OBSERVATIONS if augmented(agent_profile) else OBSERVATIONS
-        self.action_space=DEV_ACTIONS if agent_profile=='qpdev1' else ACTIONS
+        self.action_space=QP_BIN_ACTIONS if agent_profile=='qpdev1-qbins' else DEV_ACTIONS if agent_profile=='qpdev1' else ACTIONS
         self.catalog, self.detector = catalog, detector
         self.encoder, self.output = Path(encoder), Path(output)
         self.output.mkdir(parents=True, exist_ok=True)
@@ -75,10 +76,10 @@ class VVenCEnv(gym.Env):
             self.trajectory.close()
             self.trajectory = None
         if codec:
-            for name in ('events','cus'):
+            for name in ('events','cus','qgs'):
                 if (codec/(name+'.jsonl')).is_file():
                     with (codec/(name+'.jsonl')).open('rb') as src,gzip.open(codec/(name+'.jsonl.gz'),'wb') as dst:
-                        if name=='cus':
+                        if name in ('cus','qgs'):
                             sampled={0,self.frames//2,self.frames-1}
                             for line in src:
                                 if line.endswith(b'\n') and json.loads(line)['poc'] in sampled:dst.write(line)
@@ -105,7 +106,12 @@ class VVenCEnv(gym.Env):
         self.trajectory = gzip.open(folder / "trajectory.jsonl.gz", "wt", encoding="utf-8")
         self.native = NativeEpisode(self.encoder, path, folder / "codec", self.frames, self.rate,
                                     mode=self.mode, threads=self.threads,
-                                    trace_cus=self.agent_profile!='paper' and self.split!='train')
+                                    trace_cus=(self.agent_profile!='paper' and self.split!='train') or self.agent_profile=='qpdev1-qbins',
+                                    trace_qgs=self.agent_profile=='qpdev1-qbins')
+        self.action_audit=None
+        if self.agent_profile=='qpdev1-qbins':
+            from .action_audit import ActionAudit
+            self.action_audit=ActionAudit(self.native.output)
         self.decisions = 0
         self.rewards = []
         self.precisions, self.recalls = [], []
@@ -126,8 +132,9 @@ class VVenCEnv(gym.Env):
         current = self.native.current
         action=np.asarray(action)
         if action.shape!=self.action_space.shape or not np.isfinite(action).all():raise ValueError('Invalid policy action')
-        delta=map_action(action)
+        delta=codec_action(action,self.action_space)
         post, next_state = self.native.step(delta)
+        applied=self.action_audit.consume(post,delta) if self.action_audit else None
         poc = post["poc"]
         raw = self.detector(self.source[poc])
         reconstructed_bytes = (self.native.recon / f"{poc}.yuv").read_bytes()
@@ -139,6 +146,7 @@ class VVenCEnv(gym.Env):
         paper_reward=reward
         self.frame_f1.append(task_f1(metrics))
         if self.agent_profile!='paper':
+            previous_cost=self.rate_cost
             reward,self.rate_cost=reward_increment(metrics,self.native.bits,self.decisions,self.frames,
                                                    self.rate*1000,self.rate_cost)
         self.previous_delta=delta.copy();self.previous_au_bits=post['au_bits']
@@ -150,6 +158,7 @@ class VVenCEnv(gym.Env):
                 'objective_reward':reward,'agent_profile':self.agent_profile,
                 "video_id": self.video_id, "poc": poc, "rate_kbps": self.rate, "start_frame": self.start_frame,
                 "consumed_action":np.asarray(post.get("consumed_action",np.zeros(600)),dtype=float).ravel().tolist(),**metrics}
+        if applied is not None:info['native_action_audit']=applied
         self.rewards.append(reward)
         self.precisions.append(metrics["precision"])
         self.recalls.append(metrics["recall"])
@@ -159,9 +168,15 @@ class VVenCEnv(gym.Env):
                "tp": metrics["tp"], "fp": metrics["fp"], "fn": metrics["fn"],
                "raw_boxes": raw.tolist(), "reconstructed_boxes": prediction.tolist(),
                "reconstruction_sha256": hashlib.sha256(reconstructed_bytes).hexdigest(),
-               "gaussian_action": np.asarray(action).tolist(), "history_poc": current["history_poc"],
+               "policy_action":np.asarray(action).tolist(),
+               "action_distribution":"MultiCategorical" if self.agent_profile=='qpdev1-qbins' else "Gaussian",
+               "history_poc": current["history_poc"],
                "state_sha256":hashlib.sha256(json.dumps(current,sort_keys=True,allow_nan=False).encode()).hexdigest(),
                "consumed_action":info["consumed_action"],"post":post}
+        if self.agent_profile!='qpdev1-qbins':row['gaussian_action']=np.asarray(action).tolist()
+        if applied is not None:row['native_action_audit']=applied
+        if self.agent_profile!='paper':row.update(task_reward=self.frame_f1[-1]/self.frames,
+            bitrate_reward=-.1*(self.rate_cost-previous_cost))
         self.trajectory.write(json.dumps(row, allow_nan=False) + "\n")
         self.trajectory.flush()
         if not self.retain_media:
@@ -190,9 +205,11 @@ class VVenCEnv(gym.Env):
                 requested_nonzero_fraction=float(np.mean([r['nonzero_fraction'] for r in self.requested])))
             if self.agent_profile!='paper' and not np.isclose(sum(self.rewards),info['episode']['objective_score'],atol=1e-8):
                 raise ValueError('Training return differs from the final validation objective')
+            if self.action_audit:info['episode']['native_action_audit']=self.action_audit.summary()
             atomic_json(self.native.output.parent/'episode_summary.json',
                 {'video_id':self.video_id,'rate_kbps':self.rate,'mode':self.mode,
-                 'agent_profile':self.agent_profile,'final_cu_trace_pocs':[0,self.frames//2,self.frames-1],**info['episode']})
+                 'agent_profile':self.agent_profile,'evaluation_label':self.evaluation_label,
+                 'final_cu_trace_pocs':[0,self.frames//2,self.frames-1],**info['episode']})
             obs = {name: np.zeros(space.shape, dtype=np.float32) for name, space in self.observation_space.spaces.items()}
         else:
             obs = self._observation(next_state)

@@ -39,12 +39,17 @@ def summarize(output):
            'macro_rate_increase_at_most_1percent':ratio<=.01,
            'p95_rate_increase_at_most_5percent':float(np.percentile([r['rate_ratio'] for r in rows],95))<=.05,
            'nonzero_requested_qp_fraction_above_1percent':nonzero>.01}
+    if 'random_score' in best:
+        gates['objective_above_random']=best['score']>best['random_score']
+        gates['all_pairs_actual_rate_error_within_5percent']=all(abs(p['agent']['actual_kbps']/p['rate_kbps']-1)<=.05 for p in best['points'])
+        gates['all_pairs_psnr_drop_at_most_0_5db']=all(p['agent']['psnr_y']>=p['anchor']['psnr_y']-.5 for p in best['points'])
     result={'status':'VALIDATION_SCREEN_ONLY','advance_to_long_training':all(gates.values()),
             'screening_gates':gates,'best_update':best['completed_rollouts'],'best_timesteps':best['num_timesteps'],
             'initial_score':initial['score'] if initial else None,'best_score':best['score'],
             'delta_score_vs_initial':gain,'macro_delta_f1_pp':100*delta_f1,
             'macro_rate_increase_percent':100*ratio,'macro_delta_objective':obj,
             'requested_nonzero_fraction':nonzero,'pairs':len(rows),
+            'random_score':best.get('random_score'),
             'interpretation':'Predeclared heuristic screening; not significance, AP improvement, Test results or multi-seed evidence. Compare with corrected paper control at equal budget.'}
     atomic_json(out/'development_summary.json',result)
     import matplotlib
@@ -65,7 +70,7 @@ def summarize(output):
     candidates=[]
     for p in (root/'validation_media'/str(best['completed_rollouts'])).glob('*/episode_summary.json'):
         s=json.loads(p.read_text())
-        if s['mode']=='live':candidates.append((p,s))
+        if s['mode']=='live' and s.get('evaluation_label','agent')=='agent':candidates.append((p,s))
     if candidates:
         p,s=sorted(candidates,key=lambda v:(v[1]['video_id'],v[1]['rate_kbps']))[0]
         with gzip.open(p.parent/'trajectory.jsonl.gz','rt',encoding='utf-8') as f:traj=[json.loads(line) for line in f]

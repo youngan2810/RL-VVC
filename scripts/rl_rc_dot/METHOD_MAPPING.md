@@ -6,6 +6,110 @@ and versioned in `qp_development.definition()`. Old test results predate the QG
 repair and do not establish the learning quality of the proposed method.
 Operational instructions: [project README](../../README.md).
 
+## Integer-action repair audit (2026-11-17)
+
+Evidence: the QPDev1 export completed 20,480 interactions, but all 12 paired
+Validation streams at updates 0/10/20/30/40 were byte-identical to the native
+anchor. Maximum deterministic |delta| was 0.080354 at the last checkpoint;
+the maximum across saved validation was 0.083789. Actor tensors did change.
+This identifies an ineffective mean action, not a frozen optimizer. Training
+sample noise (36.42% of requested cells above 0.5 in magnitude) is not evidence
+of a useful deterministic policy or of that percentage of changed final CUs.
+
+| Stage | Active implementation | Values and transformations |
+|---|---|---|
+| State | `environment.VVenCEnv._observation`, `qp_development.state` | float32 global32 + maps6x20x30; unchanged |
+| Gaussian actor retained for comparison | `SpatialPolicy`, `SpatialActionHead` | float32 36 means; learned log std initially -1.8 |
+| Old sample/mean | SB3 distribution forward / `predict(deterministic=True)` | Training samples raw Gaussian; evaluation uses means |
+| Old action map | `qp_development.map_action` | clip raw to +/-10, frame 2*tanh, spatial 4*tanh, bilinear interpolation, spatial centering and bound; total +/-6 |
+| Repaired actor | `QpBinsPolicy`, `QpBinsHead` | Same extractor/context/critic; 36 groups of 5 float32 logits, 180 outputs |
+| Repaired sampling/evaluation | SB3 2.7 MultiCategoricalDistribution | Sample category indices int64 in [0,4]; deterministic argmax; index2 means zero |
+| Repaired map | `map_qp_bins` | Categories -> integer {-2,-1,0,1,2}; frame + 5x7 spatial controls tiled over 15x10 CTU32; integer centering; total within +/-6 |
+| Wire | `codec.NativeEpisode.step`, `method.wire_map` | 600 doubles, canonical 9-significant-digit text; integer maps represented exactly; echo verified |
+| Native input | `RCDot.cpp::beforeEncode` | Active map retained per POC; maps wholly below |0.5| bypass the action hook |
+| QG aggregation | `RCDot.cpp::requestedQp` | Pixel-area-weighted double mean across intersecting 16x16 map cells |
+| Integer request | same function | std::lround(mean), half away from zero; native QPA base is int; Clip3(-qpBDOffset,63,base+delta) |
+| Quantization/RDO | `EncCu.cpp::xCompressCU` | Sets currQP/baseQP; synchronizes quantizer and RDO lambda relative to native CTU QPA; existing single-delta/2 repair unchanged |
+| Final CU | `RCDot.cpp::recordCu` | Winning luma CU QP/area. Zero-residual QP inference can differ from an RDO candidate request |
+| Bitstream | `finishPicture`, `NativeEpisode.step`, `evaluate.verify_decoded` | Actual Annex-B AU bits, reconstructed hashes, independent VVdeC parity |
+
+`RLDotAction.h` and `RLQpAction.h` are historical interfaces, not the active
+VVENC_RCDOT action path. No encoder, feature extractor, task reward, critic,
+auxiliary target/loss, learning rate or dataset is changed by this repair.
+
+### Why categorical and CTU-aligned requests
+
+PPO supports MultiDiscrete actions in SB3 2.7. Five levels per existing
+decision give 180 logits, sampled as 36 factorized categoricals; PPO does not
+enumerate 5^36 joint choices. Seven levels +/-3 are possible, but unnecessary
+for the first repair and widen exploration. Frame +/-2 plus centered regional
+choices still allow a total within +/-6; exploration can alter bitrate/PSNR
+and must be checked rather than declared safe a priori.
+
+Integer values alone do not eliminate pooling cancellation. Opposite +2/-2
+cells in one QG average to zero. The new map is homogeneous within each CTU32,
+so every legal sub-QG inside that CTU sees the same integer. This holds only
+for the locked CTU32/DQP2 profile. A different CTU geometry needs a new mapping
+and contract, not reuse of this assumption. Native pooling/clipping stays intact.
+
+Continuous rescaling would require calibrated exploration and can still leave
+the mean below threshold. Rounding a Gaussian or using a quantization-aware
+projection is possible when PPO stores the original latent action and its
+likelihood, but deterministic means can remain zero and many latent values
+produce one encoder action. A categorical policy learns bin probabilities
+directly; this is preferred here for semantics and implementation simplicity,
+not a claim that categorical PPO must outperform Gaussian PPO.
+
+All categories are legal *requests*; clipping at the native QG bounds can
+make requests equivalent. We record those clips. We do not mask using an
+inaccurate frame QP because actual native sub-QG QPA bases are chosen later.
+No detector input or post-action information is added to the state.
+
+### PPO probability and diagnostics
+
+Rollouts store raw category indices and their joint log probability (sum of
+36 log probabilities), not pooled maps or rounded deltas. SB3 computes
+sampling, argmax, entropy and evaluate_actions in that same domain. AuxBuffer
+separately verifies that decoding the stored category vector reproduces the
+exact echoed wire map. Tests check manual summed log probability/entropy,
+ratio=1 before update, integer buffer values, finite updates and checkpoint
+reload. Critic/auxiliary architecture and their loss coefficients are unchanged.
+
+`metrics/actions.jsonl` and each trajectory record requested maps, candidate
+QG aggregated/rounded/effective deltas, clip counts and winning-CU pixel-weighted
+QP histograms. Native traces are buffered by POC: coding and output order must
+not be conflated. Candidate RDO decisions may repeat geometry and are not
+independent winning QGs. Full counts cover the whole run; detailed native
+trace rows retained in SAFE are sampled at POC0/middle/last to limit volume.
+
+Update diagnostics include sampled and argmax category fractions, zero-bin
+probability, logits range, entropy, approximate KL and all existing PPO/value/
+auxiliary losses. Per-step task and bitrate reward components are logged
+without changing their sum. Validation adds reproducibly seeded Random to
+native anchor/No-op/Initial/Trained, and independently decodes every method
+when the required decoder is supplied.
+
+`action_preflight.py` checks fixed -2/-1/0/+1/+2 and spatial maps before any
+new-profile training: exact candidate QP/lambda, final CU QP, bitstream
+sensitivity and independent decode are separate gates. Zero must be byte-exact
+with native anchor. Bitstream/PSNR changes do not establish detection improvement.
+
+The new profile `qpdev1-qbins` cannot resume Gaussian QPDev1 checkpoints because
+the action distribution/head and environment mapping differ. Start MODE=new;
+keep prior exports as evidence. The short notebook uses 5,120 interactions,
+the same Mini16/4 and three validation rates. A session above that budget needs
+a previous passed screen and --allow-long-training. Preliminary screens include
+actual rate error <=5% and PSNR drop <=0.5dB for all validation pairs; these are
+declared experimental thresholds, not a hard real-time bitrate guarantee.
+
+Local native probes use a synthetic clip and an explicitly constant detector.
+They can prove action execution, PPO interaction and return arithmetic, but not
+useful car-detection learning. Real BDD short Validation remains necessary;
+no long training or Test30 is justified solely by passing the technical probes.
+
+Sources: [SB3 2.7 distributions](https://stable-baselines3.readthedocs.io/en/v2.7.0/common/distributions.html),
+[PPO implementation](https://stable-baselines3.readthedocs.io/en/v2.7.0/_modules/stable_baselines3/ppo/ppo.html).
+
 ## QG correctness repair 2026 11 15
 
 Action contract `native-qpa-single-delta/2` replaces the compounded inter-QG
