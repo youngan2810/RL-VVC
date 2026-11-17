@@ -1,8 +1,40 @@
 # RL-VVC — Masked Dueling Double DQN (D3QN) for Task-Aware QP
 
 > **Nhánh:** `experiment/d3qn-native-mdp-v2`  
-> **Trạng thái:** source nghiên cứu; chưa xác nhận chạy thành công với VVenC/VVdeC/YOLO trên Kaggle, chưa có kết quả D3QN hay chứng minh tốt hơn VVenC QPA.  
+> **Trạng thái:** **V2 đã chạy thành công** Mini16/Val4 với 5.120 transitions và decoder parity; tuy nhiên policy chưa ổn định. **V3 mới là source tối ưu đang chờ kiểm thử native/training mới** — không tuyên bố V3 đã có gain.  
 > **Thuật toán chính:** **Masked Dueling Double DQN**, không phải PPO.
+
+## Quan trọng — V3 ổn định hóa sau pilot V2
+
+**Dữ liệu pilot thực** (Train16/Val4, Test30 chưa đụng) cho thấy:
+- D3QN V2 checkpoint **3072** đạt F1 Val4 `0.798227`, objective `0.650367`,
+  bitrate thực `118.29 kbps`, vượt QPA và fixed -2 ở target 120 kbps.
+- Checkpoint **5120** giảm còn F1 `0.781997`, objective `0.636617`, nên
+  **checkpoint cuối không phải tốt nhất**.
+- Greedy V2 chọn action **19 = (+1 ROI,+2 BG)** cho **943/1024**
+  frame Validation cuối; Q-value/TD error tăng, cần tìm hiểu collapse.
+
+**Báo cáo nguyên nhân, paper tham khảo và phép thử xác nhận:**
+[D3QN_V2_POSTMORTEM_V3_PLAN.md](scripts/rl_rc_dot/D3QN_V2_POSTMORTEM_V3_PLAN.md).
+
+**Triển khai mới (fresh run, không resume v2):**
+- [d3qn_agent_v3.py](scripts/rl_rc_dot/d3qn_agent_v3.py) — 3-step replay,
+  Polyak target, epsilon chậm, LR giảm;
+- [d3qn_native_env_v3.py](scripts/rl_rc_dot/d3qn_native_env_v3.py) —
+  action trước biểu diễn bằng ROI và BG QP riêng, không phải ID tuyến tính;
+- [d3qn_native_runner_v3.py](scripts/rl_rc_dot/d3qn_native_runner_v3.py) —
+  Mini Train16/Val4, 5 bitrate train được cân bằng và các fixed controls;
+- [d3qn_verify_decoded.py](scripts/rl_rc_dot/d3qn_verify_decoded.py) —
+  parity VVdeC độc lập, không import PPO;
+- [test_d3qn_native_v3.py](scripts/rl_rc_dot/test_d3qn_native_v3.py) —
+  regression tests state/replay/Double Q/checkpoint.
+
+Lệnh entry point mới: `python -m scripts.rl_rc_dot.d3qn_native_runner_v3`.
+**Old V2 source/runner được giữ để tái lập**. Reward F1–bitrate
+vẫn giữ như V2 (gamma1); những thay đổi này là **giả thuyết kỹ thuật cần
+lần Train16/Val4 mới xác nhận**, không phải cải thiện đã được đo.
+
+---
 
 README này dành cho **nhánh D3QN**. PPO vẫn được giữ trên nhánh [`main`](https://github.com/youngan2810/RL-VVC/tree/main), trong notebook và module cũ để đối chứng lịch sử; không dùng `session.py` hay notebook PPO để huấn luyện D3QN.
 
