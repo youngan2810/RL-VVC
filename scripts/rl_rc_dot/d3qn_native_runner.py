@@ -1,164 +1,233 @@
-"""Isolated native VVenC QP experiment: fixed-action probe, then D3QN pilot.
+"""Native VVenC + YOLO D3QN experiment: isolated probe / train / validate.
 
-No PPO state/reward/action mapper; no Test split or published performance claim.
-Run preflight and check codec/YOLO/VVdeC availability before using this runner.
+- Mini BDD100K Train16 / Val4 only. No Test access.
+- Full replay/optimizer/RNG checkpoint each complete 256-frame training episode.
+- Training and the computationally costly validation are separate phases.
+- Validations use independent VVdeC reconstruction and native QG/lambda audits.
 """
 from __future__ import annotations
 import argparse
+import gzip
 import json
-import hashlib
+import shutil
 import time
 from pathlib import Path
+
 import numpy as np
 
-from .data import VideoCatalog,FrozenDetector,atomic_json,digest,ASSETS,source_fingerprint
+from .data import VideoCatalog, FrozenDetector, atomic_json, digest, ASSETS, source_fingerprint
 from .d3qn_native_env import D3QNNativeEnv
 from .d3qn_agent_v2 import MaskedD3QN
 from .d3qn_method import NEUTRAL_ACTION, N_ACTIONS, qp_action_map
 from .evaluate import verify_decoded
 
+PROTOCOL = 'native-masked-d3qn-qp/v2'
+FIXED_CONTROLS = (
+    ('qpa_anchor',NEUTRAL_ACTION),
+    ('global_minus1',6),                # (-1,-1)
+    ('global_plus1',18),                # (+1,+1)
+    ('roi_minus1_bg_plus1',8),          # (-1,+1)
+    ('roi_minus2_bg_plus2',4),          # (-2,+2)
+    ('roi_zero_bg_plus2',14),           # (0,+2)
+)
+
 
 def parser():
-    p=argparse.ArgumentParser(description='Standalone masked Dueling Double DQN for VVC QP')
-    p.add_argument('--phase',choices=('probe','train'),required=True)
-    for x in ('input-root','encoder','decoder','yolo-repo','weights','output'):
-        p.add_argument('--'+x,required=True,type=Path)
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--phase',choices=('probe','train','validate'),required=True)
+    for name in ('input-root','encoder','decoder','yolo-repo','weights','output'):
+        p.add_argument('--'+name,required=True,type=Path)
+    p.add_argument('--checkpoint-in',type=Path)
     p.add_argument('--ffmpeg',default='ffmpeg')
     p.add_argument('--ffprobe',default='ffprobe')
-    p.add_argument('--device',default='cpu')
+    p.add_argument('--device',default='cuda:0')
     p.add_argument('--seed',type=int,default=20261111)
-    p.add_argument('--train-steps',type=int,default=5120)
-    p.add_argument('--frames',type=int,default=256)
+    p.add_argument('--train-steps',type=int,default=5120,
+                   help='Additional 256-frame transitions THIS run; checkpoint remains resumable')
     p.add_argument('--encoder-threads',type=int,default=2)
     p.add_argument('--val-videos',type=int,default=4)
     p.add_argument('--val-rates',default='50,120,200')
+    p.add_argument('--max-hours',type=float,default=0.,
+                   help='Optional wall clock budget including Kaggle setup')
+    p.add_argument('--session-start-utc',type=float,default=0.)
     return p
 
 
-def canonical_fixed_action(action, obs):
-    """Map a fixed policy to its legal equivalent when ROI is empty/full.
-
-    Action masking removes duplicate QP maps, not the physical fixed policy.
-    Without canonicalization a fixed ROI strategy would crash on no-car POCs.
-    """
+def canonical_fixed_action(action,obs):
+    """Equivalent legal action for no-object/all-object fixed-QP probes."""
     if not isinstance(action,(int,np.integer)) or not 0<=int(action)<N_ACTIONS:
         raise ValueError('Invalid fixed action')
     if obs['legal'][action]:
         return int(action)
     wanted=qp_action_map(action,obs['maps'][4])
-    alternatives=[int(a) for a in np.flatnonzero(obs['legal'])
-                  if np.array_equal(qp_action_map(int(a),obs['maps'][4]),wanted)]
-    if len(alternatives)!=1:
-        raise ValueError('Masked fixed control has no unique legal QP-map equivalent')
-    return alternatives[0]
+    equivalent=[int(x) for x in np.flatnonzero(obs['legal'])
+                if np.array_equal(qp_action_map(int(x),obs['maps'][4]),wanted)]
+    if len(equivalent)!=1:raise ValueError('No unique legal equivalent for fixed-QP probe')
+    return equivalent[0]
 
 
-def episode(env,act,seed):
+def run_episode(env,selector,seed):
     obs,metadata=env.reset(seed=seed)
     while True:
-        chosen=int(act(obs))
-        obs,reward,done,truncated,info=env.step(chosen)
-        if truncated:raise RuntimeError('Unexpected native episode truncation')
+        action=int(selector(obs))
+        obs,reward,done,truncated,info=env.step(action)
+        if truncated:raise RuntimeError('Unexpected native truncated episode')
         if done:break
-    stream=env.native.output/'stream.266'
-    trajectory=env.folder/'trajectory.jsonl.gz'
-    return metadata,info['episode'],stream,trajectory
+    return metadata,info['episode'],env.native.output/'stream.266',env.folder/'trajectory.jsonl.gz'
+
+
+def compress_audit(output):
+    """Avoid 72-84 large raw CU/QG traces, keep lossless evidence."""
+    for name in ('events.jsonl','cus.jsonl','qgs.jsonl'):
+        src=output/name
+        if src.is_file():
+            with src.open('rb') as inp,gzip.open(str(src)+'.gz','wb',compresslevel=4) as dst:
+                shutil.copyfileobj(inp,dst)
+            src.unlink()
+
+
+def run_validation(args,catalog,detector,agent,identity,deadline):
+    rates=[int(v) for v in args.val_rates.split(',')]
+    results=[]
+    root=args.output/'validation'
+    root.mkdir(parents=True,exist_ok=True)
+    def env_for(video,rate,name):
+        return D3QNNativeEnv(catalog,detector,args.encoder,root/video/name,
+                             split='val',frames=256,rate=rate,video=video,
+                             threads=args.encoder_threads,
+                             mode='anchor' if name=='qpa_anchor' else 'live')
+    if args.phase=='probe':
+        methods=list(FIXED_CONTROLS)
+    else:
+        if agent is None:raise ValueError('Trained agent missing for validate')
+        methods=[*FIXED_CONTROLS,('trained_d3qn',None)]
+    for video in catalog.selected['val'][:args.val_videos]:
+        for rate in rates:
+            for name,fixed in methods:
+                if time.time()>=deadline:
+                    atomic_json(args.output/'validation_partial.json',results)
+                    print('VALIDATION_SOFT_STOP',len(results),flush=True)
+                    return results,False
+                env=env_for(video,rate,name)
+                select=(lambda obs,fixed=fixed:canonical_fixed_action(fixed,obs)) if fixed is not None else (
+                    lambda obs:agent.predict(obs,epsilon=0.))
+                try:
+                    meta,summary,stream,trajectory=run_episode(env,select,args.seed)
+                    verify_decoded(stream,trajectory,256,args.ffmpeg,str(args.decoder))
+                    result={'video':video,'rate_kbps':rate,'method':name,'summary':summary,
+                            'decoder_parity':True,'bitstream_sha256':digest(stream),
+                            'trajectory_sha256':digest(trajectory)}
+                    results.append(result)
+                    atomic_json(args.output/'validation_partial.json',results)
+                    print('VALIDATION_POINT_PASS',video,rate,name,summary['actual_kbps'],
+                          summary['mean_frame_f1'],flush=True)
+                finally:
+                    env.close()
+                    if env.native is None and hasattr(env,'folder'):
+                        compress_audit(env.folder/'codec')
+    atomic_json(args.output/'validation.json',results)
+    return results,True
 
 
 def main():
     args=parser().parse_args()
     rates=[int(v) for v in args.val_rates.split(',')]
-    if (args.frames!=256 or args.train_steps<1 or args.val_videos<1 or
-            not rates or len(set(rates))!=len(rates) or any(r<50 or r>200 for r in rates)):
-        raise ValueError('Mini mode requires 256 frames and validation rates within [50,200]')
-    if args.output.exists():
-        raise FileExistsError('New unique output folder required for each experiment')
+    if (args.train_steps<256 or args.train_steps%256 or not 1<=args.val_videos<=4
+            or args.encoder_threads<1 or args.max_hours<0
+            or not rates or len(set(rates))!=len(rates) or any(not 50<=r<=200 for r in rates)):
+        raise ValueError('Require 256-multiple train steps, <=4 Val videos, 50..200 kbps rates')
+    if args.phase in ('probe','train') and args.checkpoint_in is not None and args.phase=='probe':
+        raise ValueError('Probe is fixed-action only; checkpoint is irrelevant')
+    if args.phase=='validate' and args.checkpoint_in is None:
+        raise ValueError('Validate needs --checkpoint-in from a completed D3QN episode')
+    if args.output.exists():raise FileExistsError('Output directory must be new')
     args.output.mkdir(parents=True)
+    session_start=args.session_start_utc if args.session_start_utc>0 else time.time()
+    deadline=(session_start+args.max_hours*3600-900) if args.max_hours else float('inf')
     catalog=VideoCatalog(args.input_root,args.ffmpeg,args.ffprobe,mode='mini',seed=args.seed)
-    if args.val_videos>len(catalog.selected['val']):
-        raise ValueError('Requested more validation videos than Mini Val4 contains')
     catalog.check_available(('train','val'))
-    contract={
-        'schema':'independent-native-masked-d3qn-qp/v1',
-        'phase':args.phase,'frames':args.frames,'seed':args.seed,
-        'train_steps':args.train_steps,'val_videos':args.val_videos,'val_rates':rates,
-        'algorithm':'Dueling Double DQN, 25 legal ROI/BG offset pairs, replay, Double-Q target',
-        'source_fingerprint':source_fingerprint(),
-        'dataset_lock_sha256':digest(ASSETS/'dataset_lock.json'),
-        'encoder_sha256':digest(args.encoder),'decoder_sha256':digest(args.decoder),
-        'detector_weights_sha256':digest(args.weights),
-        'source_detector_required_at_encoder':True,
-        'interpretation':'Probe does not demonstrate bitrate-matched improvement. Test untouched.'
-    }
+    identity={'protocol':PROTOCOL,'seed':args.seed,'data_mode':'mini',
+              'dataset_sha256':digest(ASSETS/'dataset_lock.json'),
+              'source_fingerprint':source_fingerprint(),
+              'encoder_sha256':digest(args.encoder),
+              'detector_sha256':digest(args.weights),
+              'frames':256,'qp_offsets':[-2,-1,0,1,2],'reward':'d3qn_v2_0.15_3.0_0.02'}
+    contract={**identity,'phase':args.phase,'additional_steps':args.train_steps,
+              'val_videos':args.val_videos,'val_rates':rates,
+              'source_detector_before_action':True,'decoder_sha256':digest(args.decoder),
+              'clock_budget_hours':args.max_hours}
     atomic_json(args.output/'contract.json',contract)
     detector=FrozenDetector(args.yolo_repo,args.weights,args.device)
-    agent=MaskedD3QN(seed=args.seed,device=args.device)
-
-    def env_for(split,path,*,video=None,rate=None,mode='live'):
-        return D3QNNativeEnv(catalog,detector,args.encoder,path,split=split,
-                             frames=256,rate=rate,video=video,mode=mode,
-                             threads=args.encoder_threads,random_windows=(split=='train'))
-
+    status='not_started'
     try:
-        if args.phase=='train':
-            train=env_for('train',args.output/'training')
-            obs,meta=train.reset(seed=args.seed)
-            logs=[];counter=np.zeros(N_ACTIONS,dtype=int)
-            t0=time.perf_counter()
-            try:
-                for i in range(args.train_steps):
-                    epsilon=max(.05,1.-.95*i/max(1,args.train_steps-1))
-                    action=agent.predict(obs,epsilon=epsilon)
-                    counter[action]+=1
-                    nxt,r,done,truncated,info=train.step(action)
-                    if truncated:raise RuntimeError('Unexpected native truncation')
-                    update=agent.observe(obs,action,r,nxt,done)
-                    if update is not None and (i+1)%256==0:
-                        logs.append({'step':i+1,'epsilon':epsilon,**update})
-                    if done:
-                        logs.append({'step':i+1,'episode':info['episode']})
-                        obs,meta=train.reset(seed=int(agent.rng.integers(1,2**31)))
-                    else:obs=nxt
-                agent.save(args.output/'checkpoint.pt')
-                atomic_json(args.output/'train_metrics.json',logs)
-                atomic_json(args.output/'train_summary.json',
-                            {'interactions':agent.steps,'optimizer_updates':agent.updates,
-                             'actions':counter.tolist(),'elapsed_seconds':time.perf_counter()-t0})
-            finally:train.close()
-        # The fixed controls are intentionally compact; expand rates/videos
-        # and include full 25 fixed actions for rigorous headroom coverage.
-        representative=[
-            ('qpa_anchor',NEUTRAL_ACTION),
-            ('global_minus1',6),  # roi=-1, background=-1
-            ('global_plus1',18),  # roi=+1, background=+1
-            ('roi_minus1_bg_plus1',8),
-            ('roi_minus2_bg_plus2',4),
-            ('roi_zero_bg_plus2',14)]
-        results=[]
-        videos=catalog.selected['val'][:args.val_videos]
-        for video in videos:
-            for rate in rates:
-                entries=representative+([('trained_d3qn',None)] if args.phase=='train' else [])
-                for name,constant in entries:
-                    case=env_for('val',args.output/'validation'/video/name,
-                                 video=video,rate=rate,
-                                 mode='anchor' if name=='qpa_anchor' else 'live')
-                    selector=(lambda obs,constant=constant:canonical_fixed_action(constant,obs)) if constant is not None else (
-                        lambda obs:agent.predict(obs,epsilon=0.))
-                    try:
-                        meta,metrics,stream,trajectory=episode(case,selector,args.seed)
-                        verify_decoded(stream,trajectory,256,str(args.ffmpeg),str(args.decoder))
-                        results.append({'video':video,'rate_kbps':rate,'method':name,
-                                        'summary':metrics,'vvdec_parity':True,
-                                        'bitstream_sha256':digest(stream)})
-                        atomic_json(args.output/'validation_partial.json',results)
-                    finally:case.close()
-        atomic_json(args.output/'validation.json',results)
-        print(json.dumps({'result':'D3QN_NATIVE_EXPERIMENT_FINISHED',
-                          'phase':args.phase,'trained_steps':agent.steps,
-                          'validation_points':len(results),
-                          'warning':'Same-target bitrate is not a matched-rate claim; no Test split used'},indent=2))
-    finally:detector.close()
+        if args.phase=='probe':
+            results,finished=run_validation(args,catalog,detector,None,identity,deadline)
+            status='probe_complete' if finished else 'probe_partial'
+        else:
+            if args.checkpoint_in:
+                agent,next_seed=MaskedD3QN.load(args.checkpoint_in,identity=identity,device=args.device)
+                print('D3QN_RESUME_PASS',agent.steps,agent.updates,'replay',len(agent.replay),flush=True)
+            else:
+                agent=MaskedD3QN(seed=args.seed,device=args.device)
+                next_seed=args.seed
+            if args.phase=='train':
+                train=D3QNNativeEnv(catalog,detector,args.encoder,args.output/'training',
+                                    split='train',frames=256,threads=args.encoder_threads,
+                                    random_windows=True)
+                logs=[];counts=np.zeros(N_ACTIONS,dtype=np.int64)
+                completed_this_run=0
+                checkpoint=args.output/'checkpoint.pt'
+                try:
+                    while completed_this_run<args.train_steps:
+                        if time.time()>=deadline:
+                            status='training_soft_stop'
+                            print('TRAIN_SOFT_STOP',completed_this_run,'additional frames',flush=True)
+                            break
+                        obs,meta=train.reset(seed=next_seed)
+                        total_reward=0.;last_update=None
+                        while True:
+                            i=completed_this_run
+                            epsilon=max(.05,1.-.95*min(1.,(i+agent.steps-completed_this_run)/max(args.train_steps,agent.steps+args.train_steps)))
+                            action=agent.predict(obs,epsilon=epsilon)
+                            nxt,reward,done,truncated,info=train.step(action)
+                            if truncated:raise RuntimeError('Truncated native episode')
+                            counts[action]+=1
+                            last_update=agent.observe(obs,action,reward,nxt,done) or last_update
+                            total_reward+=reward
+                            completed_this_run+=1
+                            if done:break
+                            obs=nxt
+                        next_seed=int(agent.rng.integers(1,2**31))
+                        agent.save(checkpoint,identity=identity,next_episode_seed=next_seed)
+                        row={'total_steps':agent.steps,'additional_steps':completed_this_run,
+                             'episode':info['episode'],'episode_reward':total_reward,
+                             'epsilon':epsilon,'train_video':meta['video_id'],
+                             'train_rate':meta['rate_kbps'],'last_update':last_update}
+                        logs.append(row)
+                        atomic_json(args.output/'train_progress.json',
+                                    {'status':'checkpointed','total_steps':agent.steps,
+                                     'additional_steps':completed_this_run,'checkpoint':str(checkpoint),
+                                     'last_episode':row,'action_counts':counts.tolist()})
+                        atomic_json(args.output/'train_metrics.json',logs)
+                        print('TRAIN_EPISODE_CHECKPOINT',agent.steps,meta['video_id'],
+                              info['episode']['objective'],info['episode']['actual_kbps'],
+                              flush=True)
+                    if status!='training_soft_stop':
+                        status='train_complete'
+                finally:
+                    train.close()
+            else:
+                results,finished=run_validation(args,catalog,detector,agent,identity,deadline)
+                status='validation_complete' if finished else 'validation_partial'
+        atomic_json(args.output/'result.json',{'status':status,'phase':args.phase,
+                    'test_split_accessed':False,'trained_steps':agent.steps if args.phase!='probe' else 0})
+        print('D3QN_RUN_FINISHED',status,flush=True)
+    except BaseException as exc:
+        atomic_json(args.output/'failure.json',{'error_type':type(exc).__name__,
+                                               'error':str(exc),'status':status})
+        raise
+    finally:
+        detector.close()
 
 
 if __name__=='__main__':
