@@ -18,6 +18,21 @@ REWARD_EXCESS_WEIGHT = 3.0
 REWARD_RATE_SLACK = 0.02
 
 
+
+def balanced_train_video(train_ids, seed, completed_episodes):
+    """Use all 16 locked Mini training IDs exactly once per 16-episode epoch.
+
+    The order is reproducible across independent checkpoint resumes.
+    Training-window randomness and the agent exploration RNG stay separate.
+    """
+    ids=list(train_ids)
+    if len(ids)!=16 or len(set(ids))!=16 or not isinstance(completed_episodes,(int,np.integer)) or completed_episodes<0:
+        raise ValueError('D3QN Mini scheduler requires 16 unique training IDs and nonnegative episode index')
+    epoch,index=divmod(int(completed_episodes),16)
+    permutation=np.random.default_rng(np.random.SeedSequence([int(seed),epoch,20261117])).permutation(16)
+    return ids[int(permutation[index])]
+
+
 def semantic_importance(source_boxes):
     """Confidence-weighted box-area overlaps with each CTU; [10,15] in [0,1].
 
