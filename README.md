@@ -22,7 +22,7 @@ Không mặc định D3QN tốt hơn PPO: muốn so sánh thuật toán, phải 
 | **Validation** | **4 video** | 7 |
 | **Test** | **30 video — giữ nguyên, chưa dùng** | 100 |
 
-- Mini được chọn và khóa từ cùng [`dataset_lock.json`](scripts/rl_rc_dot/assets/dataset_lock.json), `seed=20261111`; không chia lại hoặc đụng Test để chọn mô hình.
+- Mini được chọn và khóa từ cùng [`dataset_lock.json`](scripts/rl_rc_dot/assets/dataset_lock.json), **split seed cố định `20261111`** ngay cả khi đổi training seed để chạy nhiều lần; không chia lại hoặc đụng Test để chọn mô hình.
 - Các video `.mov` không có trong GitHub. Mount dữ liệu BDD100K tại Kaggle, chẳng hạn `/kaggle/input/datasets/robikscube/driving-video-with-object-tracking`.
 - `VideoCatalog` lấy dataset theo `mode='mini'`, kiểm tra Train16/Val4. Train lấy ngẫu nhiên video từ **pool 16 video, có hoàn lại**, và cửa sổ **256 frame** tại offset 0/128/256/384/512; 5.120 transitions không bảo đảm đã xem đủ 16 video.
 - Validation mặc định **Val4 × 50/120/200 kbps = 12 video–rate points**, mỗi clip 256 frame đầu. Mỗi point còn chạy nhiều phương pháp đối chứng.
