@@ -101,9 +101,10 @@ class StableMaskedD3QN(MaskedD3QN):
         with torch.no_grad():
             for target_param,online_param in zip(self.target.parameters(),self.online.parameters()):
                 target_param.lerp_(online_param,self.target_tau)
-            values=self.online(obs).masked_fill(~obs['legal'],float('-inf'))
+            q_all=self.online(obs)
+            values=q_all.masked_fill(~obs['legal'],float('-inf'))
             qmax=values.max(dim=1).values
-            qmin=values.min(dim=1).values
+            qmin=q_all.masked_fill(~obs['legal'],float('inf')).min(dim=1).values
             gap=(qmax-qmin).mean()
             greedy=values.argmax(dim=1)
         if not torch.isfinite(gap) or not torch.isfinite(qmax).all():
