@@ -50,10 +50,27 @@ def parser():
     p.add_argument('--val-start',type=int,default=0,
                    help='Start index in locked Mini Val4 (for chunked Kaggle validation)')
     p.add_argument('--val-rates',default='50,120,200')
+    p.add_argument('--val-methods',default='all',
+                   help='Comma-separated subset of qpa_anchor, global_minus1, global_plus1, '
+                        'roi_minus1_bg_plus1, roi_minus2_bg_plus2, roi_zero_bg_plus2, trained_d3qn')
     p.add_argument('--max-hours',type=float,default=0.,
                    help='Optional wall clock budget including Kaggle setup')
     p.add_argument('--session-start-utc',type=float,default=0.)
     return p
+
+
+def balanced_train_video(train_ids, seed, completed_episodes):
+    """Cycle through ALL 16 Mini training videos once per 16 episodes.
+
+    Selection is reproducible from episode index, independent of random
+    spatial-window decisions or agent RNG, including across resume.
+    """
+    ids=list(train_ids)
+    if len(ids)!=16 or len(set(ids))!=16 or completed_episodes<0:
+        raise ValueError('D3QN Mini scheduler requires locked Train16')
+    epoch,index=divmod(int(completed_episodes),16)
+    permutation=np.random.default_rng(np.random.SeedSequence([int(seed),int(epoch),20261117])).permutation(16)
+    return ids[int(permutation[index])]
 
 
 def canonical_fixed_action(action,obs):
@@ -99,11 +116,15 @@ def run_validation(args,catalog,detector,agent,identity,deadline):
                              split='val',frames=256,rate=rate,video=video,
                              threads=args.encoder_threads,
                              mode='anchor' if name=='qpa_anchor' else 'live')
-    if args.phase=='probe':
-        methods=list(FIXED_CONTROLS)
-    else:
+    allowed=list(FIXED_CONTROLS)
+    if args.phase!='probe':
         if agent is None:raise ValueError('Trained agent missing for validate')
-        methods=[*FIXED_CONTROLS,('trained_d3qn',None)]
+        allowed.append(('trained_d3qn',None))
+    names=[name for name,_ in allowed]
+    chosen=names if args.val_methods=='all' else args.val_methods.split(',')
+    if not chosen or len(set(chosen))!=len(chosen) or any(name not in names for name in chosen):
+        raise ValueError('Invalid or duplicate validation methods for this phase')
+    methods=[item for item in allowed if item[0] in chosen]
     for video in catalog.selected['val'][args.val_start:args.val_start+args.val_videos]:
         for rate in rates:
             for name,fixed in methods:
@@ -158,7 +179,8 @@ def main():
               'detector_sha256':digest(args.weights),
               'frames':256,'qp_offsets':[-2,-1,0,1,2],'reward':'d3qn_v2_0.15_3.0_0.02'}
     contract={**identity,'phase':args.phase,'additional_steps':args.train_steps,
-              'val_videos':args.val_videos,'val_start':args.val_start,'val_rates':rates,
+              'val_videos':args.val_videos,'val_start':args.val_start,
+              'val_rates':rates,'val_methods':args.val_methods,
               'source_detector_before_action':True,'decoder_sha256':digest(args.decoder),
               'clock_budget_hours':args.max_hours,
               'epsilon_decay_steps':5120}
@@ -189,6 +211,7 @@ def main():
                             status='training_soft_stop'
                             print('TRAIN_SOFT_STOP',completed_this_run,'additional frames',flush=True)
                             break
+                        train.video=balanced_train_video(catalog.selected['train'],args.seed,agent.steps//256)
                         obs,meta=train.reset(seed=next_seed)
                         total_reward=0.;last_update=None
                         while True:
@@ -211,7 +234,10 @@ def main():
                         row={'total_steps':agent.steps,'additional_steps':completed_this_run,
                              'episode':info['episode'],'episode_reward':total_reward,
                              'epsilon':epsilon,'train_video':meta['video_id'],
-                             'train_rate':meta['rate_kbps'],'last_update':last_update}
+                             'train_rate':meta['rate_kbps'],
+                             'training_video_index':(agent.steps//256-1)%16,
+                             'training_epoch':(agent.steps//256-1)//16,
+                             'last_update':last_update}
                         logs.append(row)
                         atomic_json(args.output/'train_progress.json',
                                     {'status':'checkpointed','total_steps':agent.steps,
