@@ -1,8 +1,33 @@
 # RL-VVC — Masked Dueling Double DQN (D3QN) for Task-Aware QP
 
-> **Nhánh:** `experiment/d3qn-native-mdp-v2`  
-> **Trạng thái:** **V2 đã chạy thành công** Mini16/Val4 với 5.120 transitions và decoder parity; tuy nhiên policy chưa ổn định. **V3 mới là source tối ưu đang chờ kiểm thử native/training mới** — không tuyên bố V3 đã có gain.  
-> **Thuật toán chính:** **Masked Dueling Double DQN**, không phải PPO.
+> **Nhánh thử nghiệm hiện tại:** `experiment/d3qn-v5-coding-cycle-state`  
+> **Trạng thái:** V2/V3/V4 đã có kết quả Mini16/Val4; tất cả vẫn chưa vượt fixed ROI (-2,0). **V5-A chỉ mới hoàn thiện source và unit tests, chưa có gain được kiểm chứng bằng VVenC/Val4.**  
+> **Thuật toán:** Masked Dueling Double DQN, không phải PPO.
+
+## V5-A coding-cycle-aware state (experimental; untrained)
+
+V4's offline root-cause audit found pronounced coding-step periodicity:
+TD error at `t mod 32 == 0` averaged **4.389**, versus **0.579**
+elsewhere; greedy action rankings from V4 Best/Latest agreed on **0/1024**
+identical replay states. V4's best Val4 J=**0.643776** still failed to
+beat the fixed ROI (-2,0) J=**0.658950** (120 kbps).
+
+V5-A preserves all 25 original globals, all 5 spatial maps, action/reward,
+D3QN update and terminal-aware replay, but *adds 3 causal global features*
+`[sin(2π phase),cos(2π phase),1[phase==0]]` where phase is **coding
+step modulo 32**. The architecture's first linear input becomes 828 rather
+than 825, with otherwise identical layers. This is *coding-order
+position*, **not** a claim about actual I/CRA pictures or display POC.
+
+- [V5 Kaggle Train16/Val4 notebook](notebooks/VVC_D3QN_V5_CodingCycle_Mini16_Val4_Kaggle.ipynb)
+- [V5 evidence, exact source changes, and acceptance gates](scripts/rl_rc_dot/D3QN_V5_CODING_CYCLE_EXPERIMENT.md)
+- [V5 Python regression tests](scripts/rl_rc_dot/test_d3qn_native_v5.py)
+- [V5 notebook contract tests](scripts/rl_rc_dot/test_d3qn_v5_notebook.py)
+
+V5 uses a new `d3qn-native-checkpoint/v5-coding-cycle` format. **Never
+resume a V2/V3/V4 checkpoint into V5.** No Test30 data have been used.
+
+---
 
 ## V4 terminal-aware replay ablation (2026-11)
 
@@ -22,9 +47,10 @@ replacement when available), leaving V3 files/checkpoints intact.
 - [Measured evidence, experiment contract and acceptance criteria](scripts/rl_rc_dot/D3QN_V4_TERMINAL_REPLAY_ABLATION.md)
 - [V4 CPU regression tests](scripts/rl_rc_dot/test_d3qn_native_v4.py)
 
-**Not yet trained/evaluated:** Do not claim V4 outperforms V3 or the
-fixed-action baseline until the notebook completes the new controlled run.
-V4 checkpoints and SAFE ZIP are intentionally incompatible with V3.
+**Completed V4 Train16/Val4:** 5,120 steps; best Val4 J=0.643776 at
+1,024 steps versus V3 best 0.651504 and fixed ROI (-2,0) 0.658950.
+Terminal-aware replay did not resolve policy collapse. V4 checkpoints
+and SAFE ZIP remain incompatible with V3.
 
 ---
 
