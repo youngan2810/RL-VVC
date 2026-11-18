@@ -68,7 +68,12 @@ class V4TerminalReplayTests(unittest.TestCase):
         first=base.sample(16,'cpu')
         second=duplicate.sample(16,'cpu')
         for a,b in zip(first,second):
-            self.assertTrue(torch.equal(a,b))
+            if isinstance(a,dict):
+                self.assertEqual(set(a),set(b))
+                for key in a:
+                    self.assertTrue(torch.equal(a[key],b[key]))
+            else:
+                self.assertTrue(torch.equal(a,b))
         self.assertEqual(base.last_sample_terminal_count,duplicate.last_sample_terminal_count)
 
     def test_nstep_terminal_flush_and_reward_unchanged(self):
