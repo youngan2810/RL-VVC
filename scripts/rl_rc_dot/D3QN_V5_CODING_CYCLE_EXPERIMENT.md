@@ -59,7 +59,11 @@ The observation now has 28 globals and exactly the previous five 10×15
 spatial maps and 25-action legal mask. Input network first linear layer
 widens from 825 to 828; convolutional stack, remaining MLP, value/
 advantage heads, loss, optimizer, target updates, and value discounting
-remain unchanged.
+remain unchanged. **Initialization is controlled:** with equal random seeds,
+the original 825 first-layer columns, bias, and all other V4 network
+parameters are bit-identical at initialization. The three appended
+columns start at zero but receive gradients. V5 initially predicts the
+same Q-values as V4 for every legal action, even before V5 training.
 
 **Causality:** `coding_step == event['step'] == completed` is asserted
 before action. This is the **encoder's coding decision order**, not the
@@ -90,8 +94,11 @@ trained QP control and independent VVdeC parity verification.
   state schema and coding-period identity; Train16/Val4 only
 - `test_d3qn_native_v5.py`: CPU unit tests for cycle positions,
   codec configuration, legal action mask, exact n-step/terminal flush,
-  optimizer smoke, strict V4/V5 checkpoint isolation, and runtime
-  dimensions. Old V2/V3/V4 regression tests retained.
+  optimizer smoke, seeded V4/V5 network initialization parity,
+  isolated phase-conditioned action learning on a synthetic reward,
+  actual 256-step episode checkpoint/resume equivalence,
+  strict V4/V5 checkpoint isolation, and runtime dimensions.
+  Old V2/V3/V4 regression tests retained.
 - `test_d3qn_v5_notebook.py`: checks notebook source pin, syntax, SAFE
   and audit/validation safety contracts.
 - `notebooks/VVC_D3QN_V5_CodingCycle_Mini16_Val4_Kaggle.ipynb`:

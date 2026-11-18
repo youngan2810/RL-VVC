@@ -183,6 +183,117 @@ class V5Contracts(unittest.TestCase):
             with self.assertRaises(ValueError):
                 restored.replay.append(v4_state(1),12,.01,v5_state(2),False)
 
+    def test_same_seed_preserves_v4_initial_q_and_cycle_feature_gradients(self):
+        from scripts.rl_rc_dot.d3qn_agent_v2 import DuelingQNetwork
+        torch.manual_seed(12345)
+        original=DuelingQNetwork().eval()
+        torch.manual_seed(12345)
+        expanded=DuelingQNetworkV5().eval()
+        for name,parameter in original.state_dict().items():
+            actual=expanded.state_dict()[name]
+            if name=='fusion.0.weight':
+                self.assertTrue(torch.equal(actual[:,:825],parameter))
+                self.assertTrue(torch.count_nonzero(actual[:,825:])==0)
+            else:
+                self.assertTrue(torch.equal(actual,parameter),name)
+        prior=v4_state(0)
+        current=extend_observation(prior,0)
+        v4_input={'global':torch.from_numpy(prior['global'][None]),
+                  'maps':torch.from_numpy(prior['maps'][None]),
+                  'legal':torch.from_numpy(prior['legal'][None])}
+        v5_input={'global':torch.from_numpy(current['global'][None]),
+                  'maps':torch.from_numpy(current['maps'][None]),
+                  'legal':torch.from_numpy(current['legal'][None])}
+        with torch.no_grad():
+            torch.testing.assert_close(original(v4_input),expanded(v5_input),rtol=0,atol=0)
+        expanded.train()
+        expanded.zero_grad(set_to_none=True)
+        expanded(v5_input)[:,2].sum().backward()
+        self.assertGreater(float(expanded.fusion[0].weight.grad[:,825:].abs().sum()),0.)
+
+    def test_cycle_phase_supports_opposite_optimal_actions(self):
+        # Controlled terminal-action problem: identical V4 inputs but
+        # opposite best actions for two coding phases. This tests the
+        # learning path, not actual VVC coding gain.
+        model=StableMaskedD3QN(seed=91,lr=5e-4,n_step=1,
+                                reward_scale=1.,batch_size=8,warmup=8,
+                                train_every=1,terminal_quota=2)
+        states=[]
+        for step in (0,16):
+            s=v5_state(step)
+            s['global'][:25]=0.
+            s['maps'][4,2:8,3:10]=1.
+            s['legal'][:]=False
+            s['legal'][2]=True
+            s['legal'][19]=True
+            states.append(s)
+        terminal=terminal_observation(v4_state(0,neutral_only=True))
+        for _ in range(4):
+            for phase,s in enumerate(states):
+                for action in (2,19):
+                    best=2 if phase==0 else 19
+                    model.replay.append(s,action,1. if action==best else -1.,terminal,True)
+        for _ in range(450):
+            model._update()
+        self.assertEqual(model.predict(states[0]),2)
+        self.assertEqual(model.predict(states[1]),19)
+
+    def test_real_256_step_episode_checkpoint_resume_matches_cpu_training(self):
+        # Unlike a synthetic steps=256 assignment, complete two real
+        # 256-transition episodes and compare uninterrupted vs resumed SGD.
+        config=dict(seed=29,device='cpu',lr=5e-5,n_step=3,
+                    terminal_quota=2,reward_scale=1.,batch_size=8,
+                    warmup=16,train_every=32)
+        direct=StableMaskedD3QN(**config)
+        split=StableMaskedD3QN(**config)
+        def exercise(agent,start,end):
+            for t in range(start,end):
+                position=t%256
+                obs=v5_state(position,neutral_only=True)
+                done=position==255
+                nxt=(terminal_observation(v4_state(0,neutral_only=True)) if done
+                     else v5_state(position+1,neutral_only=True))
+                r=0.02 if position%7 else -0.03
+                agent.observe(obs,NEUTRAL_ACTION,r,nxt,done)
+            self.assertFalse(agent.pending)
+        exercise(direct,0,256)
+        exercise(split,0,256)
+        expected_next_seed=int(direct.rng.integers(1,2**31))
+        self.assertEqual(expected_next_seed,int(split.rng.integers(1,2**31)))
+        identity={'protocol':PROTOCOL,'learning':{'terminal_quota':2},
+                  'unit':'deterministic_real_episode_resume'}
+        with tempfile.TemporaryDirectory() as td:
+            checkpoint=Path(td)/'episode.pt'
+            split.save(checkpoint,identity=identity,next_episode_seed=expected_next_seed)
+            loaded,seed=StableMaskedD3QN.load(checkpoint,identity=identity)
+            self.assertEqual(seed,expected_next_seed)
+            exercise(direct,256,512)
+            exercise(loaded,256,512)
+            self.assertEqual((direct.steps,direct.updates,len(direct.replay)),
+                             (loaded.steps,loaded.updates,len(loaded.replay)))
+            for component in ('online','target'):
+                lhs=getattr(direct,component).state_dict()
+                rhs=getattr(loaded,component).state_dict()
+                for name in lhs:
+                    self.assertTrue(torch.equal(lhs[name],rhs[name]),
+                                    'Resume changed '+component+'.'+name)
+            for name in ('obs_global','obs_maps','obs_legal','actions',
+                         'rewards','next_global','next_maps','next_legal','dones'):
+                self.assertTrue(torch.equal(direct.replay.state_dict()[name],
+                                            loaded.replay.state_dict()[name]),name)
+            original_optimizer=direct.optimizer.state_dict()
+            resumed_optimizer=loaded.optimizer.state_dict()
+            for param_id,state in original_optimizer['state'].items():
+                for name,value in state.items():
+                    other=resumed_optimizer['state'][param_id][name]
+                    if isinstance(value,torch.Tensor):
+                        self.assertTrue(torch.equal(value,other),
+                                        'Optimizer changed '+name)
+                    else:
+                        self.assertEqual(value,other)
+            self.assertEqual(direct.predict(v5_state(31,neutral_only=True),epsilon=0.3),
+                             loaded.predict(v5_state(31,neutral_only=True),epsilon=0.3))
+
     def test_cli_and_protocol_locked_to_train16_val4(self):
         args=parser().parse_args(['--phase','train','--input-root','.',
             '--encoder','./enc','--decoder','./dec','--yolo-repo','./yolo',

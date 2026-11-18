@@ -47,7 +47,17 @@ class DuelingQNetworkV5(DuelingQNetwork):
     """Same dueling CNN/MLP as V4; only the global input width is +3."""
     def __init__(self):
         super().__init__()
-        self.fusion[0]=nn.Linear(32*25+GLOBAL_DIM_V5,128)
+        # Preserve the V4 initialization for all 825 original input
+        # coordinates. Only the three new causal features are introduced.
+        # Zero extra columns give exact V4 Q-values at initialization,
+        # but their gradients remain trainable from the first update.
+        old=self.fusion[0]
+        expanded=nn.Linear(old.in_features+3,old.out_features)
+        with torch.no_grad():
+            expanded.weight[:,:old.in_features].copy_(old.weight)
+            expanded.weight[:,old.in_features:].zero_()
+            expanded.bias.copy_(old.bias)
+        self.fusion[0]=expanded
 
     def forward(self,obs):
         glob,maps=obs['global'],obs['maps']
