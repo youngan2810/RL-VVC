@@ -35,6 +35,6 @@ jobs:
         run: |
           python -m py_compile scripts/rl_rc_dot/d3qn_method.py scripts/rl_rc_dot/d3qn_agent_v2.py scripts/rl_rc_dot/d3qn_native_env.py scripts/rl_rc_dot/d3qn_native_runner.py scripts/rl_rc_dot/test_d3qn_native_v2.py
           python -m py_compile scripts/rl_rc_dot/d3qn_agent_v3.py scripts/rl_rc_dot/d3qn_native_env_v3.py scripts/rl_rc_dot/d3qn_native_runner_v3.py scripts/rl_rc_dot/d3qn_verify_decoded.py scripts/rl_rc_dot/test_d3qn_native_v3.py
-          python -m py_compile scripts/rl_rc_dot/d3qn_agent_v4.py scripts/rl_rc_dot/d3qn_native_runner_v4.py scripts/rl_rc_dot/test_d3qn_native_v4.py
+          python -m py_compile scripts/rl_rc_dot/d3qn_agent_v4.py scripts/rl_rc_dot/d3qn_native_runner_v4.py scripts/rl_rc_dot/test_d3qn_native_v4.py scripts/rl_rc_dot/test_d3qn_v4_notebook.py
       - name: Run D3QN V2/V3/V4 regressions and Kaggle notebook contract
         run: python -m unittest scripts.rl_rc_dot.test_d3qn_native_v2 scripts.rl_rc_dot.test_d3qn_native_v3 scripts.rl_rc_dot.test_d3qn_native_v4 scripts.rl_rc_dot.test_d3qn_v3_notebook scripts.rl_rc_dot.test_d3qn_v4_notebook -v
