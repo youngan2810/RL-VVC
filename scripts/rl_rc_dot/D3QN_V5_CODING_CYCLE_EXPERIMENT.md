@@ -61,9 +61,11 @@ widens from 825 to 828; convolutional stack, remaining MLP, value/
 advantage heads, loss, optimizer, target updates, and value discounting
 remain unchanged. **Initialization is controlled:** with equal random seeds,
 the original 825 first-layer columns, bias, and all other V4 network
-parameters are bit-identical at initialization. The three appended
-columns start at zero but receive gradients. V5 initially predicts the
-same Q-values as V4 for every legal action, even before V5 training.
+parameters are bit-identical at initialization. The fusion input is
+ordered as [original 25 globals, original 800 spatial features,
+3 new cycle features], preventing a three-column shift of the spatial
+weights. The appended columns start at zero but receive gradients;
+V5 initially predicts numerically equivalent Q-values to V4.
 
 **Causality:** `coding_step == event['step'] == completed` is asserted
 before action. This is the **encoder's coding decision order**, not the

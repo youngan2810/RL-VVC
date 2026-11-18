@@ -18,7 +18,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from .d3qn_method import N_ACTIONS
-from .d3qn_state_v5 import GLOBAL_DIM_V5
+from .d3qn_state_v5 import GLOBAL_DIM_V4, GLOBAL_DIM_V5
 from .d3qn_agent_v2 import DuelingQNetwork, pack as pack_v4
 from .d3qn_agent_v4 import (
     StableMaskedD3QN as V4Agent,
@@ -70,7 +70,12 @@ class DuelingQNetworkV5(DuelingQNetwork):
                 or tuple(legal.shape)!=(glob.shape[0],N_ACTIONS)
                 or legal.dtype!=torch.bool or not bool(legal.any(dim=1).all())):
             raise ValueError('V5 Dueling Q requires nonempty Boolean legal mask')
-        context=self.fusion(torch.cat([glob,self.spatial(maps)],dim=1))
+        # Keep the original V4 825 features in their exact original order;
+        # append the three cycle features AFTER the spatial embedding.
+        # Otherwise the old spatial weights would be silently shifted by 3.
+        context=self.fusion(torch.cat([glob[:,:GLOBAL_DIM_V4],
+                                       self.spatial(maps),
+                                       glob[:,GLOBAL_DIM_V4:]],dim=1))
         value,advantage=self.value(context),self.advantage(context)
         mean_adv=(advantage*legal).sum(dim=1,keepdim=True)/legal.sum(dim=1,keepdim=True)
         return value+advantage-mean_adv

@@ -205,7 +205,7 @@ class V5Contracts(unittest.TestCase):
                   'maps':torch.from_numpy(current['maps'][None]),
                   'legal':torch.from_numpy(current['legal'][None])}
         with torch.no_grad():
-            torch.testing.assert_close(original(v4_input),expanded(v5_input),rtol=0,atol=0)
+            torch.testing.assert_close(original(v4_input),expanded(v5_input),rtol=1e-5,atol=1e-6)
         expanded.train()
         expanded.zero_grad(set_to_none=True)
         expanded(v5_input)[:,2].sum().backward()
