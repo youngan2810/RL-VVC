@@ -211,7 +211,7 @@ def main():
             else:
                 agent=StableMaskedD3QN(seed=args.seed,device=args.device,
                                        n_step=args.n_step,target_tau=args.target_tau,
-                                       lr=args.learning_rate)
+                                       lr=args.learning_rate,terminal_quota=args.terminal_quota)
                 next_seed=args.seed
             if args.phase=='train':
                 train=D3QNNativeEnv(catalog,detector,args.encoder,args.output/'training',
