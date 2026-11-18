@@ -6,7 +6,7 @@ from pathlib import Path
 
 NOTEBOOK=(Path(__file__).resolve().parents[2]/
           'notebooks/VVC_D3QN_V4_TerminalReplay_Mini16_Val4_Kaggle.ipynb')
-PINNED_CODE_SHA='8b8feb8774119bcf39b22aba477dc733b99214db'
+PINNED_CODE_SHA='6e70ff66f1947d61910d73cecaf8bf7254ad72b7'
 
 
 class V4NotebookContracts(unittest.TestCase):
