@@ -9,7 +9,9 @@ on:
       - 'scripts/rl_rc_dot/d3qn_*.py'
       - 'scripts/rl_rc_dot/test_d3qn_native_v2.py'
       - 'scripts/rl_rc_dot/test_d3qn_native_v3.py'
+      - 'scripts/rl_rc_dot/test_d3qn_v3_notebook.py'
       - 'notebooks/VVC_D3QN_Native_Mini16_Kaggle.ipynb'
+      - 'notebooks/VVC_D3QN_V3_Mini16_Val4_LearningCheck_Kaggle.ipynb'
       - '.github/workflows/D3QN-Python.yml'
 
 jobs:
@@ -30,5 +32,5 @@ jobs:
         run: |
           python -m py_compile scripts/rl_rc_dot/d3qn_method.py scripts/rl_rc_dot/d3qn_agent_v2.py scripts/rl_rc_dot/d3qn_native_env.py scripts/rl_rc_dot/d3qn_native_runner.py scripts/rl_rc_dot/test_d3qn_native_v2.py
           python -m py_compile scripts/rl_rc_dot/d3qn_agent_v3.py scripts/rl_rc_dot/d3qn_native_env_v3.py scripts/rl_rc_dot/d3qn_native_runner_v3.py scripts/rl_rc_dot/d3qn_verify_decoded.py scripts/rl_rc_dot/test_d3qn_native_v3.py
-      - name: Run D3QN V2 and V3 masked Double-Q / n-step regression tests
-        run: python -m unittest scripts.rl_rc_dot.test_d3qn_native_v2 scripts.rl_rc_dot.test_d3qn_native_v3 -v
+      - name: Run D3QN V2/V3 regressions and Kaggle notebook contract
+        run: python -m unittest scripts.rl_rc_dot.test_d3qn_native_v2 scripts.rl_rc_dot.test_d3qn_native_v3 scripts.rl_rc_dot.test_d3qn_v3_notebook -v
