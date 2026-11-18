@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 NOTEBOOK=Path(__file__).resolve().parents[2]/"notebooks/VVC_D3QN_V5_CodingCycle_Mini16_Val4_Kaggle.ipynb"
-PINNED_SOURCE="f4346f2d682a95eda513218d008a9ddfb806f1b8"
+PINNED_SOURCE="f10ec5de7c9a8b2bf3db561f6df46e9a8643eced"
 
 class V5NotebookContracts(unittest.TestCase):
     def source(self):
