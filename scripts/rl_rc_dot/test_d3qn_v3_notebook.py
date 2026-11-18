@@ -40,6 +40,14 @@ class KaggleV3NotebookContract(unittest.TestCase):
                 self.assertIn(term,text)
         self.assertNotIn("'--phase','test'",text)
 
+    def test_vvc_poc_export_is_coding_order_safe(self):
+        text=self.concatenated
+        # VVC POC is presentation order; native AU traces are encoding order.
+        self.assertNotIn("assert row['poc']==n",text)
+        self.assertIn('seen_pocs',text)
+        self.assertIn("row['coding_step']=n",text)
+        self.assertIn('reuse_completed_attempt',text)
+
     def test_train16_val4_not_test30(self):
         text=self.concatenated
         self.assertIn('len(TRAIN_IDS)==16',text)
