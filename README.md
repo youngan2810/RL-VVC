@@ -4,6 +4,30 @@
 > **Trạng thái:** **V2 đã chạy thành công** Mini16/Val4 với 5.120 transitions và decoder parity; tuy nhiên policy chưa ổn định. **V3 mới là source tối ưu đang chờ kiểm thử native/training mới** — không tuyên bố V3 đã có gain.  
 > **Thuật toán chính:** **Masked Dueling Double DQN**, không phải PPO.
 
+## V4 terminal-aware replay ablation (2026-11)
+
+The V3 n-step=3 and controlled n-step=1 learning checks are complete, but neither
+best policy beats fixed ROI (-2,0) on Mini Val4 at 120 kbps. Replay audits also
+found large terminal Bellman errors (V3 3-step mean target-Q = -2.273, with
+only 60 terminal transitions in 5,120). This is a **verified terminal
+calibration problem, not a proven root cause of policy collapse**.
+
+A separate experimental implementation is now available under
+[`scripts/rl_rc_dot/d3qn_agent_v4.py`](scripts/rl_rc_dot/d3qn_agent_v4.py)
+and [`d3qn_native_runner_v4.py`](scripts/rl_rc_dot/d3qn_native_runner_v4.py).
+V4 changes **only minibatch replay sampling** (4 terminal / 64, without
+replacement when available), leaving V3 files/checkpoints intact.
+
+- [V4 Kaggle Train16/Val4 notebook](notebooks/VVC_D3QN_V4_TerminalReplay_Mini16_Val4_Kaggle.ipynb)
+- [Measured evidence, experiment contract and acceptance criteria](scripts/rl_rc_dot/D3QN_V4_TERMINAL_REPLAY_ABLATION.md)
+- [V4 CPU regression tests](scripts/rl_rc_dot/test_d3qn_native_v4.py)
+
+**Not yet trained/evaluated:** Do not claim V4 outperforms V3 or the
+fixed-action baseline until the notebook completes the new controlled run.
+V4 checkpoints and SAFE ZIP are intentionally incompatible with V3.
+
+---
+
 ## Quan trọng — V3 ổn định hóa sau pilot V2
 
 **Dữ liệu pilot thực** (Train16/Val4, Test30 chưa đụng) cho thấy:
