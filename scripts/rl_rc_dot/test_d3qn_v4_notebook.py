@@ -10,6 +10,12 @@ PINNED_CODE_SHA='8b8feb8774119bcf39b22aba477dc733b99214db'
 
 
 class V4NotebookContracts(unittest.TestCase):
+    def test_all_code_cells_have_valid_python_syntax(self):
+        nb=json.loads(NOTEBOOK.read_text(encoding='utf-8'))
+        for index,cell in enumerate(nb['cells']):
+            if cell['cell_type']=='code':
+                compile(''.join(cell['source']),f'v4_cell_{index}.py','exec')
+
     def test_pinned_protocol_runner_sampling_gate_and_safe(self):
         nb=json.loads(NOTEBOOK.read_text(encoding='utf-8'))
         self.assertEqual(nb['nbformat'],4)
