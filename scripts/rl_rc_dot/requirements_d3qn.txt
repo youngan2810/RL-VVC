@@ -1,0 +1,6 @@
+# D3QN V3 runtime only. Do not install PPO/SB3/Gymnasium.
+# Kaggle already provides CUDA PyTorch and torchvision: do not replace them.
+numpy>=1.24,<3
+scipy>=1.10,<2
+matplotlib>=3.7
+Pillow>=9
