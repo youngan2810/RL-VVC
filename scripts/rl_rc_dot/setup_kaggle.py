@@ -47,6 +47,8 @@ def main():
     p.add_argument("--output",type=Path,default=Path("/kaggle/working/rl_rc_dot_tools"))
     p.add_argument("--jobs",type=int,default=2)
     p.add_argument("--install-system",action="store_true")
+    p.add_argument("--d3qn-only",action="store_true",
+                   help="Install the lean V3 D3QN runtime, no PPO/SB3/Gymnasium.")
     a=p.parse_args()
     if a.jobs<1:p.error("jobs must be positive")
     repo=a.repo.resolve();a.output.mkdir(parents=True,exist_ok=True);logs=a.output/"logs"
@@ -58,7 +60,9 @@ def main():
         if os.name!="posix":raise ValueError("--install-system is intended for Kaggle Linux")
         run(["apt-get","update","-qq"],logs,"apt_update",600)
         run(["apt-get","install","-y","-qq","build-essential","cmake","ninja-build","git","ffmpeg","libswscale-dev","libavutil-dev"],logs,"apt_install",900)
-    run([sys.executable,"-m","pip","install","--disable-pip-version-check","-r",repo/"scripts/rl_rc_dot/requirements.txt"],logs,"python_dependencies",900)
+    requirements="requirements_d3qn.txt" if a.d3qn_only else "requirements.txt"
+    run([sys.executable,"-m","pip","install","--disable-pip-version-check",
+         "-r",repo/"scripts/rl_rc_dot"/requirements],logs,"python_dependencies",900)
     run(["cmake","-S",repo,"-B",repo/"build","-DCMAKE_BUILD_TYPE=Release","-DVVENC_ENABLE_THIRDPARTY_JSON=ON","-DVVENC_ENABLE_INSTALL=OFF"],logs,"vvenc_configure",300)
     run(["cmake","--build",repo/"build","--target","vvencapp","--parallel",a.jobs],logs,"vvenc_build",2400)
     dec=a.output/"vvdec"
