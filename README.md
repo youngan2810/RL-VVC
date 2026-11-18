@@ -32,9 +32,15 @@
 **Notebook Kaggle V3 đã push lên cùng repository:**
 [notebooks/VVC_D3QN_V3_Mini16_Val4_LearningCheck_Kaggle.ipynb](notebooks/VVC_D3QN_V3_Mini16_Val4_LearningCheck_Kaggle.ipynb).
 
-Notebook **ghim source commit `07a0eacb6793e368920ae0b89b9b51d06b5b56b2`**, dùng
+Notebook **ghim source commit `7b245aa27f8a8cc20049db31e5e7660a9a5bf165`**, dùng
 Train16/Val4, 5 milestone, checkpoint tốt nhất theo Val4, fixed QPA/-2/(+1,+2)/(-2,0),
-không chạy Test30. Đây là notebook V3 mới; notebook FIXED V2 trước đó
+không chạy Test30. **Notebook FINAL** tự kiểm tra SHA256 của Train16/Val4,
+sử dụng `setup_kaggle --d3qn-only` để tránh cài PPO/SB3,
+lưu SAFE ZIP sau từng baseline/episode-group/Val video, cho phép resume
+nếu Kaggle dừng giữa chừng; đồng thời xuất compact frame traces (ΔQP
+ROI/BG, ROI coverage, pseudo-F1, AU bitrate) và best/latest checkpoint.
+
+Đây là notebook V3 mới; notebook FIXED V2 trước đó
 không tự cập nhật và sẽ vẫn dùng mã V2.
 
 Lệnh entry point mới: `python -m scripts.rl_rc_dot.d3qn_native_runner_v3`.
