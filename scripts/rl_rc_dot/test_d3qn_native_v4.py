@@ -150,6 +150,12 @@ class V4TerminalReplayTests(unittest.TestCase):
         self.assertEqual(args.n_step,3)
         self.assertAlmostEqual(args.learning_rate,5e-5)
         self.assertEqual(args.train_steps,5120)
+        # Prevent recorded CLI quota from silently differing from the
+        # effective replay quota in a fresh (non-resumed) training run.
+        from pathlib import Path
+        runner=(Path(__file__).with_name('d3qn_native_runner_v4.py')
+                .read_text(encoding='utf-8'))
+        self.assertIn('lr=args.learning_rate,terminal_quota=args.terminal_quota)',runner)
         self.assertNotIn('test',parser()._option_string_actions['--phase'].choices)
         with self.assertRaises(ValueError):
             StableMaskedD3QN(batch_size=4,terminal_quota=5)
