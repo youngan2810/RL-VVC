@@ -155,3 +155,41 @@ def restore_encoder_from_safe(source, expected_sha256, destination):
     finally:
         staging.unlink(missing_ok=True)
     return destination
+
+
+def read_validation_artifacts(output, expected_cases):
+    """Read one native runner attempt, rejecting partial data masquerading as COMPLETE."""
+    import json
+    output = Path(output)
+    status_file = output / 'validation_status.json'
+    if not status_file.is_file():
+        raise ValueError('Native runner wrote no validation_status.json')
+    report = json.loads(status_file.read_text(encoding='utf-8'))
+    status = report.get('status')
+    if status not in ('COMPLETE', 'PARTIAL', 'FAILED'):
+        raise ValueError('Unknown native validation status')
+    expected = [tuple(c) for c in expected_cases]
+    reported = [tuple(c) for c in report.get('expected_cases', ())]
+    if reported != expected or len(set(expected)) != len(expected):
+        raise ValueError('Native validation expected cases differ from request')
+    partial = output / 'validation_partial.json'
+    if not partial.is_file():
+        raise ValueError('Native runner did not persist validation_partial.json')
+    rows = json.loads(partial.read_text(encoding='utf-8'))
+    completed = [(r['video'], r['rate_kbps'], r['method']) for r in rows]
+    if (len(set(completed)) != len(completed) or
+            not set(completed).issubset(set(expected)) or
+            [tuple(c) for c in report.get('completed_cases', ())] != completed or
+            any(r.get('decoder_parity') is not True for r in rows)):
+        raise ValueError('Invalid or duplicate native validation results')
+    full = output / 'validation.json'
+    if status == 'COMPLETE':
+        if set(completed) != set(expected) or not full.is_file():
+            raise ValueError('Incomplete native validation marked COMPLETE')
+        if json.loads(full.read_text(encoding='utf-8')) != rows:
+            raise ValueError('Complete native validation differs from partial journal')
+    elif full.exists():
+        raise ValueError('PARTIAL/FAILED native validation must not write validation.json')
+    if status == 'PARTIAL' and len(completed) == len(expected):
+        raise ValueError('PARTIAL status with all requested cases')
+    return status, rows, report.get('error')

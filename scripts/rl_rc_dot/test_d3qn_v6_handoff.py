@@ -141,5 +141,47 @@ class HandoffTests(unittest.TestCase):
         self.assertFalse(preflight_matches(report, {}, encoder_sha256='a', decoder_sha256='b'))
 
 
+    def test_native_validation_complete_partial_failed_and_dedup_contract(self):
+        """Simulates deadline after two cases and a failure after one case."""
+        from .d3qn_v6_native_runner import write_validation_artifacts
+        from .d3qn_v6_handoff import read_validation_artifacts
+        expected = [('vid0', 120, 'fixed2'), ('vid0', 120, 'fixed9'),
+                    ('vid0', 120, 'qpa_anchor')]
+        def row(case):
+            return {'video': case[0], 'rate_kbps': case[1], 'method': case[2],
+                    'summary': {'objective': .5}, 'decoder_parity': True}
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            first = [row(c) for c in expected[:2]]
+            write_validation_artifacts(output, expected, first, 'PARTIAL')
+            self.assertFalse((output / 'validation.json').exists())
+            status, completed, error = read_validation_artifacts(output, expected)
+            self.assertEqual(status, 'PARTIAL')
+            self.assertEqual(len(completed), 2)
+            self.assertIsNone(error)
+            missing = [case for case in expected if case not in
+                       {(r['video'], r['rate_kbps'], r['method']) for r in completed}]
+            self.assertEqual(missing, expected[2:])
+            with self.assertRaisesRegex(ValueError, 'COMPLETE requires'):
+                write_validation_artifacts(output, expected, first, 'COMPLETE')
+            with self.assertRaisesRegex(ValueError, 'Duplicate'):
+                write_validation_artifacts(output, expected, first + first[:1], 'FAILED')
+            with self.assertRaisesRegex(ValueError, 'unrequested'):
+                write_validation_artifacts(output, expected, first + [row(('other', 120, 'fixed2'))], 'FAILED')
+            write_validation_artifacts(output, missing, [], 'FAILED', 'simulated decoder exception')
+            self.assertFalse((output / 'validation.json').exists())
+            status, rows, error = read_validation_artifacts(output, missing)
+            self.assertEqual((status, rows, error), ('FAILED', [], 'simulated decoder exception'))
+            write_validation_artifacts(output, missing, [row(missing[0])], 'COMPLETE')
+            self.assertTrue((output / 'validation.json').is_file())
+            status, rows, _ = read_validation_artifacts(output, missing)
+            self.assertEqual(status, 'COMPLETE')
+            self.assertEqual(first + rows, [row(c) for c in expected])
+            # Corruption must be reported, never treated as a completed case.
+            (output / 'validation_partial.json').write_text('[]')
+            with self.assertRaisesRegex(ValueError, 'Invalid|differs'):
+                read_validation_artifacts(output, missing)
+
+
 if __name__ == '__main__':
     unittest.main()

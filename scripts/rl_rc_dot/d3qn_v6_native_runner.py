@@ -113,6 +113,38 @@ def close_and_compress_native(env):
             compress_native_audits(native_dir)
 
 
+def write_validation_artifacts(output, expected_cases, results, status, error=None):
+    """Only COMPLETE creates validation.json; preserve proven completed cases otherwise.
+
+    A requested case is uniquely identified by (video ID, target rate, method).
+    The status file is written last, after the durable partial/completed rows.
+    """
+    output = Path(output)
+    if status not in ('COMPLETE', 'PARTIAL', 'FAILED'):
+        raise ValueError('Unknown native validation status')
+    expected = [tuple(c) for c in expected_cases]
+    completed = [(r['video'], r['rate_kbps'], r['method']) for r in results]
+    if len(set(expected)) != len(expected) or len(set(completed)) != len(completed):
+        raise ValueError('Duplicate expected or completed native validation case')
+    if not set(completed).issubset(set(expected)):
+        raise ValueError('Native validation includes an unrequested case')
+    if any(r.get('decoder_parity') is not True for r in results):
+        raise ValueError('Validation result missing decoded parity')
+    if status == 'COMPLETE' and set(completed) != set(expected):
+        raise ValueError('COMPLETE requires all requested native cases')
+    if status == 'PARTIAL' and len(completed) == len(expected):
+        raise ValueError('PARTIAL cannot claim a fully completed batch')
+    atomic_json(output / 'validation_partial.json', results)
+    if status == 'COMPLETE':
+        atomic_json(output / 'validation.json', results)
+    else:
+        (output / 'validation.json').unlink(missing_ok=True)
+    atomic_json(output / 'validation_status.json', {
+        'status': status, 'expected_cases': [list(c) for c in expected],
+        'completed_cases': [list(c) for c in completed], 'error': str(error) if error else None})
+    return status
+
+
 def experiment_identity(args):
     return {'protocol': PROTOCOL, 'seed': args.seed, 'data_mode': 'mini',
             'dataset_split_seed': SPLIT_SEED,
@@ -233,38 +265,45 @@ def main():
             requested = names if args.val_methods == 'all' else set(args.val_methods.split(','))
             if not requested or not requested.issubset(names):
                 raise ValueError('Invalid requested validation methods')
+            cases = [(vid, rate, name, fixed)
+                     for vid in catalog.selected['val'][args.val_start:args.val_start+args.val_videos]
+                     for rate in rates for name, fixed in allowed if name in requested]
+            expected_cases = [(vid, rate, name) for vid, rate, name, _ in cases]
             results = []
+            status, error = 'FAILED', None
             try:
-                for vid in catalog.selected['val'][args.val_start:args.val_start+args.val_videos]:
-                    for rate in rates:
-                        for name, fixed in allowed:
-                            if name not in requested:
-                                continue
-                            if time.time() >= deadline:
-                                atomic_json(args.output / 'validation_partial.json', results)
-                                print('V6_VALIDATION_SOFT_STOP', len(results), flush=True)
-                                return
-                            mode = 'anchor' if name == 'qpa_anchor' else 'live'
-                            env = D3QNNativeEnvV3(catalog, detector, args.encoder,
-                                args.output / 'validation' / vid / name,
-                                split='val', frames=256, rate=rate, video=vid,
-                                threads=args.encoder_threads, mode=mode)
-                            try:
-                                choose = (lambda obs, a=fixed: canonical_fixed_action(a, obs)) \
-                                    if fixed is not None else (lambda obs: agent.predict(obs, epsilon=0.))
-                                meta, summary, stream, trace = run_episode(env, choose, args.seed)
-                                verify_decoded(stream, trace, 256, args.ffmpeg, str(args.decoder))
-                                results.append({'video': vid, 'rate_kbps': rate, 'method': name,
-                                    'summary': summary, 'decoder_parity': True,
-                                    'bitstream_sha256': digest(stream),
-                                    'trajectory_sha256': digest(trace)})
-                                atomic_json(args.output / 'validation_partial.json', results)
-                                print('V6_NATIVE_VALIDATION_PASS', vid, rate, name,
-                                      summary['objective'], flush=True)
-                            finally:
-                                close_and_compress_native(env)
+                for vid, rate, name, fixed in cases:
+                    if time.time() >= deadline:
+                        status = 'PARTIAL'
+                        print('V6_VALIDATION_SOFT_STOP', len(results),
+                              'of', len(expected_cases), flush=True)
+                        break
+                    mode = 'anchor' if name == 'qpa_anchor' else 'live'
+                    env = D3QNNativeEnvV3(catalog, detector, args.encoder,
+                        args.output / 'validation' / vid / name,
+                        split='val', frames=256, rate=rate, video=vid,
+                        threads=args.encoder_threads, mode=mode)
+                    try:
+                        choose = (lambda obs, a=fixed: canonical_fixed_action(a, obs)) \
+                            if fixed is not None else (lambda obs: agent.predict(obs, epsilon=0.))
+                        meta, summary, stream, trace = run_episode(env, choose, args.seed)
+                        verify_decoded(stream, trace, 256, args.ffmpeg, str(args.decoder))
+                        results.append({'video': vid, 'rate_kbps': rate, 'method': name,
+                            'summary': summary, 'decoder_parity': True,
+                            'bitstream_sha256': digest(stream),
+                            'trajectory_sha256': digest(trace)})
+                        atomic_json(args.output / 'validation_partial.json', results)
+                        print('V6_NATIVE_VALIDATION_PASS', vid, rate, name,
+                              summary['objective'], flush=True)
+                    finally:
+                        close_and_compress_native(env)
+                else:
+                    status = 'COMPLETE'
+            except Exception as exc:
+                error = repr(exc)
+                raise
             finally:
-                atomic_json(args.output / 'validation.json', results)
+                write_validation_artifacts(args.output, expected_cases, results, status, error)
     finally:
         detector.close()
 
