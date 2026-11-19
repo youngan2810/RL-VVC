@@ -118,3 +118,70 @@ jobs:
         working-directory: pinned-source
         run: |
           python -c 'from scripts.rl_rc_dot.pixels import verify_conversion; print(verify_conversion())'
+
+  v6-native-pinned-preflight:
+    name: V6 exact pinned-source native 32-picture QG/VVdeC gate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 55
+    steps:
+      - name: Checkout delivered Kaggle notebook
+        uses: actions/checkout@v4
+        with:
+          path: delivery
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Extract immutable source commit
+        id: source
+        run: |
+          python - <<'PY'
+          import json, pathlib, re, os
+          nb=json.loads(pathlib.Path('delivery/notebooks/VVC_D3QN_V6_ActionConditioned_Mini16_Val4_Kaggle.ipynb').read_text())
+          code='\n'.join(''.join(c['source']) for c in nb['cells'] if c['cell_type']=='code')
+          sha=re.findall(r"^TRAINING_SOURCE_COMMIT='([a-f0-9]{40})'$",code,re.M)
+          assert len(sha)==1
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('sha='+sha[0]+'\n')
+          PY
+      - name: Checkout exact training source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          path: pinned-source
+          persist-credentials: false
+      - name: Install native build and FFmpeg dependencies
+        run: |
+          test "$(git -C pinned-source rev-parse HEAD)" = "${{ steps.source.outputs.sha }}"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cmake ninja-build git ffmpeg libswscale-dev libavutil-dev
+          python -m pip install 'numpy>=1.24,<3'
+      - name: Build pinned native VVenC app
+        run: |
+          cmake -S pinned-source -B pinned-source/build -DCMAKE_BUILD_TYPE=Release -DVVENC_ENABLE_THIRDPARTY_JSON=ON -DVVENC_ENABLE_INSTALL=OFF
+          cmake --build pinned-source/build --target vvencapp --parallel 4
+          test -x pinned-source/bin/release-static/vvencapp
+      - name: Build pinned VVdeC app
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/fraunhoferhhi/vvdec.git /tmp/v6-handoff-vvdec
+          git -C /tmp/v6-handoff-vvdec fetch --no-tags --depth 1 origin 649f0b2fafee977c998d7e4d674f8b88d952e3a3
+          git -C /tmp/v6-handoff-vvdec checkout --detach 649f0b2fafee977c998d7e4d674f8b88d952e3a3
+          cmake -S /tmp/v6-handoff-vvdec -B /tmp/v6-handoff-vvdec/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/v6-handoff-vvdec/build --target vvdecapp --parallel 4
+          test -x /tmp/v6-handoff-vvdec/bin/release-static/vvdecapp
+      - name: Execute EXACT Kaggle 32-frame native preflight from pinned source
+        working-directory: pinned-source
+        run: |
+          python -m scripts.rl_rc_dot.preflight \
+            --encoder bin/release-static/vvencapp \
+            --decoder /tmp/v6-handoff-vvdec/bin/release-static/vvdecapp \
+            --output /tmp/v6-handoff-native-preflight32 \
+            --frames 32 --threads 2
+          python - <<'PY'
+          import json, hashlib, pathlib
+          p=pathlib.Path('/tmp/v6-handoff-native-preflight32/PREFLIGHT.json')
+          report=json.loads(p.read_text())
+          encoder=pathlib.Path('bin/release-static/vvencapp')
+          assert report['gate']=='REAL_VVC_STATE_ACTION_AU_DECODE_PASS'
+          assert report['encoder_sha256']==hashlib.sha256(encoder.read_bytes()).hexdigest()
+          print('PINNED_NATIVE_PREFLIGHT_PASS', report['gate'], 'source=${{ steps.source.outputs.sha }}')
+          PY
