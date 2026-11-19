@@ -1,8 +1,12 @@
 """V6 handoff provenance checks. No training or codec work occurs here."""
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import hashlib
+import json
+import os
+import shutil
+import zipfile
 
 import torch
 
@@ -87,3 +91,67 @@ def preflight_matches(report, contract, *, encoder_sha256, decoder_sha256):
         contract.get('encoder_sha256') == encoder_sha256 and
         contract.get('decoder_sha256') == decoder_sha256
     )
+
+
+def read_safe_manifest(source):
+    """Find exactly one V6 SAFE manifest in an archive or extracted directory."""
+    source = Path(source)
+    if source.is_file():
+        with zipfile.ZipFile(source) as archive:
+            members = [name for name in archive.namelist() if not name.endswith('/')]
+            if len(members) != len(set(members)):
+                raise ValueError('Duplicate SAFE ZIP entries')
+            for name in members:
+                path = PurePosixPath(name)
+                if path.is_absolute() or '..' in path.parts or chr(92) in name:
+                    raise ValueError('Unsafe SAFE member path')
+            roots = [name[:-len('learning_manifest.json')] for name in members
+                     if name.endswith('learning_manifest.json')]
+            if len(roots) != 1:
+                raise ValueError('Expected exactly one V6 manifest root')
+            manifest = json.loads(archive.read(roots[0]+'learning_manifest.json'))
+            return manifest, roots[0]
+    if source.is_dir():
+        candidates = ([source/'learning_manifest.json'] if
+                      (source/'learning_manifest.json').is_file()
+                      else list(source.rglob('learning_manifest.json')))
+        if len(candidates) != 1:
+            raise ValueError('Expected exactly one extracted V6 manifest')
+        return json.loads(candidates[0].read_text(encoding='utf-8')), candidates[0].parent
+    raise FileNotFoundError('V6 SAFE artifact not found: '+str(source))
+
+
+def restore_encoder_from_safe(source, expected_sha256, destination):
+    """Recover the EXACT original native encoder, verifying bytes before executable use.
+
+    This does not relax checkpoint identity: the recovered binary must match the
+    recorded checkpoint/manifest SHA. The Kaggle native preflight is still required.
+    """
+    source = Path(source)
+    manifest, root = read_safe_manifest(source)
+    recorded = manifest.get('identity', {}).get('encoder_sha256')
+    if manifest.get('schema') != MANIFEST_SCHEMA or recorded != expected_sha256:
+        raise ValueError('SAFE encoder identity mismatch')
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = destination.with_name(destination.name+'.tmp')
+    try:
+        if source.is_file():
+            with zipfile.ZipFile(source) as archive:
+                member = str(root) + 'TOOLCHAIN/vvencapp'
+                if member not in archive.namelist():
+                    raise FileNotFoundError('SAFE ZIP has no bundled original VVenC executable')
+                with archive.open(member, 'r') as inp, staging.open('wb') as dst:
+                    shutil.copyfileobj(inp, dst)
+        else:
+            filename = Path(root) / 'TOOLCHAIN/vvencapp'
+            if not filename.is_file() or not filename.resolve().is_relative_to(Path(root).resolve()):
+                raise FileNotFoundError('Extracted SAFE has no original VVenC executable')
+            shutil.copyfile(filename, staging)
+        if sha256(staging) != expected_sha256:
+            raise ValueError('Bundled VVenC SHA-256 mismatch; refusing unsafe resume')
+        os.chmod(staging, 0o755)
+        staging.replace(destination)
+    finally:
+        staging.unlink(missing_ok=True)
+    return destination

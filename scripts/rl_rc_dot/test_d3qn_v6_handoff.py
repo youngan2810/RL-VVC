@@ -1,5 +1,7 @@
 """Source-pinned V6 Kaggle handoff and audit cleanup regressions."""
 import gzip
+import json
+import zipfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +11,7 @@ import torch
 from .d3qn_v6_handoff import (
     CHECKPOINT_VERSION, MANIFEST_SCHEMA,
     preflight_matches, verify_checkpoint, verify_checkpoint_digests, verify_manifest, sha256,
+    read_safe_manifest, restore_encoder_from_safe,
 )
 from .d3qn_v6_native_runner import close_and_compress_native
 
@@ -98,6 +101,37 @@ class HandoffTests(unittest.TestCase):
                 verify_checkpoint_digests(folder, recorded)
             with self.assertRaisesRegex(ValueError, 'Unsafe'):
                 verify_checkpoint_digests(folder, {'../escape.pt': 'hash'})
+
+    def test_restore_exact_encoder_from_zip_and_extracted_directory(self):
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            original = b'fake-vvenc-binary-for-integrity-test'
+            original_file = directory/'original'
+            original_file.write_bytes(original)
+            expected_hash = sha256(original_file)
+            ident = identity()
+            ident['encoder_sha256'] = expected_hash
+            manifest = {'schema': MANIFEST_SCHEMA, 'identity': ident}
+            zip_path = directory/'safe.zip'
+            with zipfile.ZipFile(zip_path, 'w') as archive:
+                archive.writestr('outer/learning_manifest.json', json.dumps(manifest))
+                archive.writestr('outer/TOOLCHAIN/vvencapp', original)
+            recovered = directory/'restored/vvencapp'
+            self.assertEqual(restore_encoder_from_safe(zip_path, expected_hash, recovered), recovered)
+            self.assertEqual(recovered.read_bytes(), original)
+            self.assertTrue(recovered.stat().st_mode & 0o111)
+            with self.assertRaisesRegex(ValueError, 'identity'):
+                restore_encoder_from_safe(zip_path, 'incorrect', recovered)
+            extracted = directory/'extracted'
+            (extracted/'TOOLCHAIN').mkdir(parents=True)
+            (extracted/'learning_manifest.json').write_text(json.dumps(manifest))
+            (extracted/'TOOLCHAIN/vvencapp').write_bytes(original)
+            self.assertEqual(read_safe_manifest(extracted)[0]['identity'], ident)
+            self.assertEqual(restore_encoder_from_safe(extracted, expected_hash, recovered), recovered)
+            (extracted/'TOOLCHAIN/vvencapp').write_bytes(b'altered')
+            with self.assertRaisesRegex(ValueError, 'SHA-256 mismatch'):
+                restore_encoder_from_safe(extracted, expected_hash, recovered)
+            self.assertEqual(recovered.read_bytes(), original)
 
     def test_preflight_cache_binds_both_encoder_and_decoder(self):
         report = {'gate': 'REAL_VVC_STATE_ACTION_AU_DECODE_PASS', 'encoder_sha256': 'a'}
