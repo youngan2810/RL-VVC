@@ -85,12 +85,32 @@ def run_episode(env, choose, seed):
 
 
 def compress_native_audits(directory):
+    """Atomically archive completed native audit streams; retain originals on failure."""
+    directory = Path(directory)
     for name in ('events.jsonl', 'cus.jsonl', 'qgs.jsonl'):
         source = directory / name
-        if source.is_file():
-            with source.open('rb') as inp, gzip.open(str(source) + '.gz', 'wb', compresslevel=4) as out:
-                shutil.copyfileobj(inp, out)
+        if not source.is_file():
+            continue
+        dest = directory / (name + '.gz')
+        tmp = directory / (name + '.gz.tmp')
+        try:
+            with source.open('rb') as inp, tmp.open('wb') as raw:
+                with gzip.GzipFile(fileobj=raw, mode='wb', compresslevel=4) as out:
+                    shutil.copyfileobj(inp, out)
+            tmp.replace(dest)
             source.unlink()
+        finally:
+            tmp.unlink(missing_ok=True)
+
+
+def close_and_compress_native(env):
+    """The environment clears env.native on close: capture its path FIRST."""
+    native_dir = getattr(getattr(env, 'native', None), 'output', None)
+    try:
+        env.close()
+    finally:
+        if native_dir is not None and Path(native_dir).is_dir():
+            compress_native_audits(native_dir)
 
 
 def experiment_identity(args):
@@ -242,9 +262,7 @@ def main():
                                 print('V6_NATIVE_VALIDATION_PASS', vid, rate, name,
                                       summary['objective'], flush=True)
                             finally:
-                                env.close()
-                                if env.native and env.native.output.is_dir():
-                                    compress_native_audits(env.native.output)
+                                close_and_compress_native(env)
             finally:
                 atomic_json(args.output / 'validation.json', results)
     finally:
